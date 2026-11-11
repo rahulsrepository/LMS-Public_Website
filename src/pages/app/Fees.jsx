@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Badge, Button, Empty, Field, Modal, PageTitle, Select, TextInput, statusTone } from '../../components/ui'
+import { Badge, Button, DateInput, Empty, Field, Modal, PageTitle, Select, TextInput, statusTone } from '../../components/ui'
 import { downloadCsv, formatDate, inr, todayISO } from '../../lib/format'
 import { useLookups, monthSeries } from './lookups'
 import { useTitle } from '../useTitle'
@@ -85,7 +85,7 @@ function PaymentForm({ lms, onDone }) {
       </Field>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Amount"><TextInput type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} required /></Field>
-        <Field label="Date"><TextInput type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
+        <Field label="Date"><DateInput value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Method">

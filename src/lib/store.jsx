@@ -1,11 +1,11 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { scoreAttempt } from './codeRunner'
-import { registerDemo, resetDemoAuth, updateDemoPassword, validatePassword, verifyDemo } from './demoAuth'
-import { todayISO, uid } from './format'
+import { registerDemo, resetDemoAuth, updateDemoEmail, updateDemoPassword, validatePassword, verifyDemo } from './demoAuth'
+import { safeExternalUrl, todayISO, uid } from './format'
 import { hasAnyPermission, hasPermission } from './permissions'
 import { INSTITUTE, JOBS, WORKSHOPS } from './catalog'
 import { createSeed, DATA_KEY, DATA_VERSION } from './seed'
-import { changeSupabasePassword, clearSupabaseConfig, createStaffWithSupabase, ensureSupabaseCourse, getSupabaseConfig, isSupabaseConfigured, loadPublicCatalog, nextStudentRollNo, resetSupabasePassword, saveBatchToSupabase, saveJobToSupabase, saveStudentToSupabase, saveSupabaseConfig, saveWorkshopToSupabase, setPersonAccess, signInWithSupabase, signOutSupabase, testSupabaseConnection } from './supabase'
+import { changeSupabasePassword, clearSupabaseConfig, createStaffWithSupabase, deleteBatchFromSupabase, deleteCourseFromSupabase, deleteJobFromSupabase, deletePersonWithSupabase, deleteStudentWithSupabase, deleteWorkshopFromSupabase, ensureSupabaseCourse, getSupabaseConfig, isSupabaseConfigured, loadExamsFromSupabase, loadNotificationReadsFromSupabase, loadNotificationsFromSupabase, loadOwnStudentFromSupabase, loadPeopleFromSupabase, loadPublicCatalog, loadStaffAttendanceFromSupabase, nextStudentRollNo, resetSupabasePassword, saveBatchToSupabase, saveExamToSupabase, saveJobToSupabase, saveNotificationReadsToSupabase, saveNotificationToSupabase, saveStaffAttendanceToSupabase, saveStudentToSupabase, saveSupabaseConfig, saveWorkshopToSupabase, setExamStatusInSupabase, setJobOpenInSupabase, setPersonAccess, signInWithSupabase, signOutSupabase, testSupabaseConnection, updateOwnSupabaseProfile, updatePersonWithSupabase, uploadProfileAvatar } from './supabase'
 
 const LmsContext = createContext(null)
 const SESSION_KEY = 'c2c-session'
@@ -23,6 +23,7 @@ function loadState() {
 
 function withCurrentContact(state) {
   if (!state?.settings) return state
+  if (!state.notificationReads) state.notificationReads = {}
   const previousPhone = '+91 96864 88775'
   const previousAddress = 'C2C Academy Campus'
   const previousWhatsapp = 'https://wa.me/919686488775'
@@ -35,7 +36,14 @@ function withCurrentContact(state) {
   if (!Array.isArray(state.jobs)) {
     state.jobs = JOBS.map((item) => ({ ...item, open: true }))
   }
+  const publicJobIds = new Set(JOBS.map((item) => item.id))
+  state.jobs = state.jobs.map((job) => publicJobIds.has(job.id) ? job : { ...job, studentOnly: true })
   if (!Array.isArray(state.facultyAttendance)) state.facultyAttendance = []
+  state.facultyAttendance = state.facultyAttendance.map((item) => {
+    if (item.category && item.personId) return item
+    const faculty = state.faculty.find((row) => row.id === item.facultyId)
+    return { ...item, category: 'teaching', personId: item.personId || faculty?.userId }
+  })
   if (!Array.isArray(state.inventory)) state.inventory = []
   if (!Array.isArray(state.tickets)) state.tickets = []
   if (!Array.isArray(state.cashNotes)) state.cashNotes = []
@@ -70,9 +78,9 @@ function isCloudId(id) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id || '')
 }
 
-async function syncAccess(userId, active) {
+async function syncAccess(userId, active, facultyStatus) {
   if (!isSupabaseConfigured() || !isCloudId(userId)) return
-  await setPersonAccess(userId, active)
+  await setPersonAccess(userId, active, facultyStatus)
 }
 
 function facultyOf(state, userId) {
@@ -99,6 +107,27 @@ function recalcFee(state, studentId) {
   fee.pending = Math.max(Number(fee.total || 0) - discounts - fee.paid, 0)
 }
 
+function readImageDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const image = new Image()
+      image.onload = () => {
+        const scale = Math.min(1, 320 / Math.max(image.width, image.height))
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.max(1, Math.round(image.width * scale))
+        canvas.height = Math.max(1, Math.round(image.height * scale))
+        canvas.getContext('2d')?.drawImage(image, 0, 0, canvas.width, canvas.height)
+        resolve(canvas.toDataURL('image/jpeg', 0.8))
+      }
+      image.onerror = () => reject(new Error('Could not decode the profile image.'))
+      image.src = String(reader.result || '')
+    }
+    reader.onerror = () => reject(new Error('Could not read the profile image.'))
+    reader.readAsDataURL(file)
+  })
+}
+
 function mergeRemoteCatalog(state, remote) {
   const courses = [...state.courses]
   remote.courses.forEach((row) => {
@@ -116,7 +145,7 @@ function mergeRemoteCatalog(state, remote) {
   })
   const jobs = [...(state.jobs || [])]
   remote.jobs.forEach((row) => {
-    const found = jobs.find((job) => job.id === row.id || job.title === row.title)
+    const found = jobs.find((job) => job.id === row.id)
     if (found) Object.assign(found, row)
     else jobs.unshift(row)
   })
@@ -127,6 +156,19 @@ function mergeRemoteCatalog(state, remote) {
     else workshops.unshift(row)
   })
   return { ...state, courses, jobs, workshops }
+}
+
+function mergeRemotePeople(state, remote) {
+  const merge = (local, saved) => [...local.filter((item) => !isCloudId(item.id)), ...saved]
+  return {
+    ...state,
+    profiles: merge(state.profiles, remote.profiles),
+    students: merge(state.students, remote.students),
+    faculty: merge(state.faculty, remote.faculty),
+    receptionists: merge(state.receptionists, remote.receptionists),
+    counsellors: merge(state.counsellors, remote.counsellors),
+    accountants: merge(state.accountants, remote.accountants),
+  }
 }
 
 function syncBatches(state, facultyId, batchIds) {
@@ -162,9 +204,115 @@ export function LmsProvider({ children }) {
     loadPublicCatalog().then((remote) => {
       if (cancel || !remote) return
       setState((current) => mergeRemoteCatalog(current, remote))
+      remote.warnings?.forEach((warning) => {
+        pushToast(`Some job details could not load. Run supabase/migrations/20261110_job_posting_apply_url_fix.sql and supabase/migrations/20261110_people_notifications_jobs.sql in the Supabase SQL Editor. ${warning}`, 'error')
+      })
+    }).catch((error) => {
+      if (!cancel) pushToast(error.message || 'Could not load the public catalog.', 'error')
     })
     return () => { cancel = true }
   }, [])
+
+  useEffect(() => {
+    if (!session || !isSupabaseConfigured()) return undefined
+    let cancel = false
+    loadExamsFromSupabase(session.role !== 'student').then((remote) => {
+      if (cancel || !remote) return
+      setState((current) => {
+        const exams = [...current.exams]
+        remote.forEach((exam) => {
+          const index = exams.findIndex((item) => item.id === exam.id)
+          if (index >= 0) exams[index] = exam
+          else exams.unshift(exam)
+        })
+        return { ...current, exams }
+      })
+    }).catch((error) => {
+      if (!cancel) pushToast(error.message || 'Could not load examinations.', 'error')
+    })
+    return () => { cancel = true }
+  }, [session?.id])
+
+  useEffect(() => {
+    if (session?.role !== 'admin' || !isSupabaseConfigured()) return undefined
+    let cancel = false
+    loadPeopleFromSupabase().then((remote) => {
+      if (cancel || !remote) return
+      setState((current) => mergeRemotePeople(current, remote))
+    }).catch((error) => {
+      if (!cancel) pushToast(error.message || 'Could not load people management records.', 'error')
+    })
+    return () => { cancel = true }
+  }, [session?.id, session?.role])
+
+  useEffect(() => {
+    if (!session || !isSupabaseConfigured()) return undefined
+    let cancel = false
+    let reportedError = false
+    const refresh = () => {
+      loadNotificationsFromSupabase().then((remote) => {
+        if (cancel || !remote) return
+        reportedError = false
+        setState((current) => {
+          const merged = [...remote]
+          current.notifications.forEach((item) => {
+            if (!merged.some((saved) => saved.id === item.id)) merged.push(item)
+          })
+          return { ...current, notifications: merged }
+        })
+      }).catch((error) => {
+        if (!cancel && !reportedError) {
+          reportedError = true
+          pushToast(error.message || 'Could not load notifications.', 'error')
+        }
+      })
+    }
+    refresh()
+    const timer = setInterval(refresh, 30000)
+    return () => {
+      cancel = true
+      clearInterval(timer)
+    }
+  }, [session?.id])
+
+  useEffect(() => {
+    if (!session || !isSupabaseConfigured() || !hasAnyPermission(session.role, ['attendance.faculty', 'faculty.manage'])) return undefined
+    let cancel = false
+    loadStaffAttendanceFromSupabase().then((remote) => {
+      if (cancel || !remote) return
+      setState((current) => {
+        const merged = [...remote]
+        current.facultyAttendance.forEach((item) => {
+          if (!merged.some((saved) => saved.id === item.id || (saved.personId === item.personId && saved.category === item.category && saved.date === item.date))) merged.push(item)
+        })
+        return { ...current, facultyAttendance: merged }
+      })
+    }).catch((error) => {
+      if (!cancel) pushToast(error.message || 'Could not load staff attendance.', 'error')
+    })
+    return () => { cancel = true }
+  }, [session?.id])
+
+  useEffect(() => {
+    if (!session || !isSupabaseConfigured()) return undefined
+    let cancel = false
+    loadNotificationReadsFromSupabase(session.id).then((ids) => {
+      if (cancel || !ids) return
+      setState((current) => {
+        const reads = current.notificationReads || {}
+        return {
+          ...current,
+          notificationReads: {
+            ...reads,
+            [session.id]: [...new Set([...(reads[session.id] || []), ...ids])],
+          },
+        }
+      })
+    }).catch((error) => {
+      if (!cancel) pushToast(error.message || 'Could not load notification read status.', 'error')
+    })
+    return () => { cancel = true }
+  }, [session?.id])
 
   useEffect(() => {
     if (!session || isSupabaseConfigured()) return
@@ -178,7 +326,11 @@ export function LmsProvider({ children }) {
 
   function pushToast(message, tone = 'success') {
     const id = uid('toast')
-    setToasts((current) => [...current, { id, message, tone }])
+    const text = String(message || 'Something went wrong.')
+    const visibleMessage = /failed to fetch|networkerror|load failed/i.test(text)
+      ? 'Unable to reach the server. Check your internet connection and try again. If this keeps happening, verify the Supabase project URL and project status.'
+      : text
+    setToasts((current) => [...current, { id, message: visibleMessage, tone }])
     setTimeout(() => setToasts((current) => current.filter((item) => item.id !== id)), 3800)
   }
 
@@ -221,11 +373,45 @@ export function LmsProvider({ children }) {
     }
   }
 
+  async function publishBroadcastNotification(title, body) {
+    const notification = {
+      id: uid('nt'),
+      title,
+      body,
+      audience: 'all',
+      createdAt: new Date().toISOString(),
+    }
+    try {
+      const saved = await saveNotificationToSupabase(notification)
+      if (saved) Object.assign(notification, saved)
+    } catch (error) {
+      pushToast(`Posted successfully, but notifications could not be sent: ${error.message}`, 'error')
+      return
+    }
+    const draft = structuredClone(stateRef.current)
+    draft.notifications.unshift(notification)
+    stateRef.current = draft
+    setState(draft)
+  }
+
   async function login(email, password) {
     if (!email?.trim() || !password) throw new Error('Email and password are required.')
     let next
+    let remoteStudent = null
     if (isSupabaseConfigured()) {
       next = await signInWithSupabase(email.trim(), password)
+      if (next.role === 'student') {
+        try {
+          remoteStudent = await loadOwnStudentFromSupabase(next.id)
+        } catch (error) {
+          await signOutSupabase()
+          throw error
+        }
+        if (!remoteStudent) {
+          await signOutSupabase()
+          throw new Error('No student record is linked to this login. Ask an admin to finish account setup.')
+        }
+      }
     } else {
       const auth = verifyDemo(email, password)
       if (!auth) throw new Error('Incorrect email or password.')
@@ -235,6 +421,17 @@ export function LmsProvider({ children }) {
     }
     persistSession(next)
     const draft = structuredClone(stateRef.current)
+    if (isSupabaseConfigured()) {
+      const profile = { id: next.id, name: next.name, email: next.email, phone: next.phone || '', role: next.role, active: true }
+      const profileIndex = draft.profiles.findIndex((item) => item.id === next.id)
+      if (profileIndex >= 0) draft.profiles[profileIndex] = { ...draft.profiles[profileIndex], ...profile }
+      else draft.profiles.unshift(profile)
+      if (remoteStudent) {
+        const studentIndex = draft.students.findIndex((item) => item.id === remoteStudent.id)
+        if (studentIndex >= 0) draft.students[studentIndex] = remoteStudent
+        else draft.students.unshift(remoteStudent)
+      }
+    }
     draft.logs = [
       { id: uid('log'), actorId: next.id, actorName: next.name, role: next.role, action: 'Signed in', at: new Date().toISOString() },
       ...draft.logs,
@@ -332,8 +529,170 @@ export function LmsProvider({ children }) {
     can: (permission) => hasPermission(session?.role, permission),
     canAny: (permissions) => hasAnyPermission(session?.role, permissions),
 
+    async updatePerson(userId, input) {
+      const actor = sessionRef.current
+      const profile = stateRef.current.profiles.find((item) => item.id === userId)
+      const name = input.name?.trim()
+      const email = input.email?.trim().toLowerCase()
+      if (actor?.role !== 'admin') {
+        pushToast('Only an admin can edit people account details.', 'error')
+        return null
+      }
+      if (!profile || !name || !email) {
+        pushToast('Name and email are required.', 'error')
+        return null
+      }
+      if (stateRef.current.profiles.some((item) => item.id !== userId && item.email?.toLowerCase() === email)) {
+        pushToast('An account with this email already exists.', 'error')
+        return null
+      }
+      if (input.courseId && input.batchId) {
+        const batch = stateRef.current.batches.find((item) => item.id === input.batchId)
+        if (!batch || batch.courseId !== input.courseId) {
+          pushToast('Choose a batch that belongs to the selected course.', 'error')
+          return null
+        }
+      }
+      if (input.avatarFile && (!input.avatarFile.type?.startsWith('image/') || input.avatarFile.size > 2 * 1024 * 1024)) {
+        pushToast('Choose an image file that is 2 MB or smaller.', 'error')
+        return null
+      }
+      let avatarUrl = profile.avatarUrl || ''
+      try {
+        if (isSupabaseConfigured()) {
+          if (input.avatarFile) avatarUrl = await uploadProfileAvatar(userId, input.avatarFile)
+          await updatePersonWithSupabase({
+            userId,
+            name,
+            email,
+            phone: input.phone || '',
+            experience: input.experience || '',
+            student: stateRef.current.students.find((item) => item.userId === userId) ? {
+              guardian: input.guardian || '',
+              documents: input.documents || [],
+              notes: input.notes || '',
+              course_id: input.courseId || '',
+              batch_id: input.batchId || '',
+            } : null,
+          })
+        } else if (input.avatarFile) {
+          avatarUrl = await readImageDataUrl(input.avatarFile)
+        }
+      } catch (error) {
+        pushToast(error.message || 'Could not update this person.', 'error')
+        return null
+      }
+      const result = commit('staff.manage', (draft) => {
+        const person = draft.profiles.find((item) => item.id === userId)
+        if (!person) throw new Error('Person not found.')
+        person.name = name
+        person.email = email
+        person.phone = (input.phone || '').replace(/\D/g, '').slice(-10)
+        person.experience = input.experience?.trim() || ''
+        person.avatarUrl = avatarUrl
+        draft.students.forEach((student) => {
+          if (student.userId === userId) {
+            student.name = name
+            student.email = email
+            student.phone = person.phone
+            student.experience = person.experience
+            student.guardian = input.guardian ?? student.guardian
+            student.documents = input.documents || student.documents
+            student.notes = input.notes ?? student.notes
+            if (input.courseId && input.batchId) {
+              student.courseId = input.courseId
+              student.batchId = input.batchId
+            }
+          }
+        })
+      }, `Updated profile for ${name}`, 'Person details updated.')
+      if (result) {
+        if (!isSupabaseConfigured()) updateDemoEmail(userId, email)
+        if (actor.id === userId) persistSession({ ...actor, name, email })
+      }
+      return result
+    },
+
     myFaculty: () => (session ? facultyOf(state, session.id) : null),
     myStudent: () => state.students.find((student) => student.userId === session?.id) || null,
+    studentBookmarks: () => state.students.find((student) => student.userId === session?.id)?.bookmarks || [],
+
+    toggleStudentBookmark(type, id) {
+      const actor = sessionRef.current
+      if (actor?.role !== 'student') return null
+      const student = stateRef.current.students.find((item) => item.userId === actor.id)
+      if (!student || !['course', 'material', 'assignment', 'exam'].includes(type) || !id) {
+        pushToast('This item cannot be bookmarked.', 'error')
+        return null
+      }
+      const draft = structuredClone(stateRef.current)
+      const record = draft.students.find((item) => item.id === student.id)
+      record.bookmarks = record.bookmarks || []
+      const index = record.bookmarks.findIndex((bookmark) => bookmark.type === type && bookmark.id === id)
+      if (index >= 0) record.bookmarks.splice(index, 1)
+      else record.bookmarks.unshift({ type, id, savedAt: new Date().toISOString() })
+      stateRef.current = draft
+      setState(draft)
+      pushToast(index >= 0 ? 'Bookmark removed.' : 'Bookmarked.')
+      return true
+    },
+
+    async updateOwnStudentProfile(input) {
+      const actor = sessionRef.current
+      if (actor?.role !== 'student') return null
+      const student = stateRef.current.students.find((item) => item.userId === actor.id)
+      const name = input.name?.trim()
+      if (!student || !name) {
+        pushToast('Your name is required.', 'error')
+        return null
+      }
+      const phone = (input.phone || '').replace(/\D/g, '').slice(-10)
+      try {
+        if (isSupabaseConfigured()) await updateOwnSupabaseProfile({ name, phone })
+      } catch (error) {
+        pushToast(error.message || 'Could not save your profile.', 'error')
+        return null
+      }
+      const draft = structuredClone(stateRef.current)
+      const ownStudent = draft.students.find((item) => item.userId === actor.id)
+      ownStudent.name = name
+      ownStudent.phone = phone
+      ownStudent.guardian = input.guardian?.trim() || ''
+      ownStudent.gender = input.gender || ''
+      ownStudent.dateOfBirth = input.dateOfBirth || ''
+      ownStudent.whatsapp = (input.whatsapp || '').replace(/\D/g, '').slice(-10)
+      const profile = draft.profiles.find((item) => item.id === actor.id)
+      if (profile) {
+        profile.name = name
+        profile.phone = phone
+      }
+      const nextSession = { ...actor, name }
+      persistSession(nextSession)
+      stateRef.current = draft
+      setState(draft)
+      pushToast('Profile information saved.')
+      return true
+    },
+
+    updateStudentPortfolio(section, entries) {
+      const actor = sessionRef.current
+      if (actor?.role !== 'student') return null
+      if (!['education', 'projects', 'experiences', 'certificates'].includes(section)) {
+        pushToast('This profile section cannot be updated.', 'error')
+        return null
+      }
+      const draft = structuredClone(stateRef.current)
+      const student = draft.students.find((item) => item.userId === actor.id)
+      if (!student) {
+        pushToast('Student profile not found.', 'error')
+        return null
+      }
+      student[section] = entries
+      stateRef.current = draft
+      setState(draft)
+      pushToast('Profile section updated.')
+      return true
+    },
 
     students() {
       if (!session) return []
@@ -478,6 +837,31 @@ export function LmsProvider({ children }) {
       return state.notifications.filter((item) => item.audience === 'all' || item.audience === session.role || (item.audience === 'students' && session.role === 'student') || (item.audience === 'staff' && session.role !== 'student'))
     },
 
+    unreadNotifications() {
+      if (!session) return []
+      const readIds = new Set(state.notificationReads?.[session.id] || [])
+      return api.notifications().filter((item) => !readIds.has(item.id))
+    },
+
+    async markNotificationsRead() {
+      if (!session) return false
+      const items = api.notifications()
+      const ids = items.map((item) => item.id)
+      const currentReads = stateRef.current.notificationReads || {}
+      const merged = [...new Set([...(currentReads[session.id] || []), ...ids])]
+      const draft = structuredClone(stateRef.current)
+      draft.notificationReads = { ...(draft.notificationReads || {}), [session.id]: merged }
+      stateRef.current = draft
+      setState(draft)
+      try {
+        if (isSupabaseConfigured()) await saveNotificationReadsToSupabase(session.id, ids)
+      } catch (error) {
+        pushToast(error.message || 'Could not save notification read status.', 'error')
+        return false
+      }
+      return true
+    },
+
     async addStudent(input) {
       const passwordError = validatePassword(input.password)
       if (!input.email?.trim()) {
@@ -488,25 +872,17 @@ export function LmsProvider({ children }) {
         pushToast(passwordError, 'error')
         return null
       }
+      if (input.avatarFile && (!input.avatarFile.type?.startsWith('image/') || input.avatarFile.size > 2 * 1024 * 1024)) {
+        pushToast('Choose an image file that is 2 MB or smaller.', 'error')
+        return null
+      }
       const email = input.email.trim().toLowerCase()
       if (stateRef.current.profiles.some((item) => item.email === email)) {
         pushToast('An account with this email already exists.', 'error')
         return null
       }
-      let profileId = uid('user')
-      try {
-        if (isSupabaseConfigured()) {
-          const created = await createStaffWithSupabase({
-            role: 'student',
-            full_name: input.name,
-            email,
-            phone: input.phone,
-            password: input.password,
-          })
-          profileId = created.id
-        }
-      } catch (error) {
-        pushToast(error.message || 'Could not create the student login.', 'error')
+      if (!input.name?.trim() || !input.courseId || !input.batchId) {
+        pushToast('Name, course and batch are required.', 'error')
         return null
       }
       const batch = stateRef.current.batches.find((item) => item.id === input.batchId)
@@ -519,12 +895,48 @@ export function LmsProvider({ children }) {
         pushToast('This batch is full.', 'error')
         return null
       }
+      if (isSupabaseConfigured() && !isCloudId(batch.id)) {
+        pushToast('Save this batch again so it is stored in Supabase, then add the student.', 'error')
+        return null
+      }
       let rollNo = `C2C26${String(stateRef.current.students.length + 1).padStart(3, '0')}`
+      try {
+        if (isSupabaseConfigured()) rollNo = await nextStudentRollNo(stateRef.current.students.length)
+      } catch (error) {
+        pushToast(error.message || 'Could not assign a student roll number.', 'error')
+        return null
+      }
+      let profileId = uid('user')
+      try {
+        if (isSupabaseConfigured()) {
+          const created = await createStaffWithSupabase({
+            role: 'student',
+            full_name: input.name,
+            email,
+            phone: input.phone,
+            password: input.password,
+            experience: input.experience || '',
+          })
+          profileId = created.id
+        }
+      } catch (error) {
+        pushToast(error.message || 'Could not create the student login.', 'error')
+        return null
+      }
+      let avatarUrl = ''
+      let avatarError = ''
+      if (input.avatarFile) {
+        try {
+          avatarUrl = isSupabaseConfigured()
+            ? await uploadProfileAvatar(profileId, input.avatarFile)
+            : await readImageDataUrl(input.avatarFile)
+        } catch (error) {
+          avatarError = error.message || 'Could not save the profile picture.'
+        }
+      }
       let studentId = uid('stu')
       try {
         if (isSupabaseConfigured()) {
-          rollNo = await nextStudentRollNo(stateRef.current.students.length)
-          if (!isCloudId(batch.id)) throw new Error('Save this batch again so it is stored in Supabase, then add the student.')
           const course = stateRef.current.courses.find((item) => item.id === input.courseId)
           const saved = await saveStudentToSupabase({
             profileId,
@@ -546,7 +958,7 @@ export function LmsProvider({ children }) {
         pushToast(error.message || 'Could not store the student in Supabase.', 'error')
         return null
       }
-      return commit(['students.write', 'students.register'], (draft, actor) => {
+      const result = commit(['students.write', 'students.register'], (draft, actor) => {
         if (!input.name?.trim() || !input.courseId || !input.batchId) throw new Error('Name, course and batch are required.')
         const batch = draft.batches.find((item) => item.id === input.batchId)
         if (!batch || batch.courseId !== input.courseId) throw new Error('Choose a batch that belongs to the selected course.')
@@ -554,7 +966,7 @@ export function LmsProvider({ children }) {
         if (count >= batch.seats) throw new Error('This batch is full.')
         const id = studentId
         const course = draft.courses.find((item) => item.id === input.courseId)
-        draft.profiles.push({ id: profileId, name: input.name.trim(), email, phone: (input.phone || '').replace(/\D/g, '').slice(-10), role: 'student', active: true })
+        draft.profiles.push({ id: profileId, name: input.name.trim(), email, phone: (input.phone || '').replace(/\D/g, '').slice(-10), experience: input.experience?.trim() || '', avatarUrl, role: 'student', active: true })
         if (!isSupabaseConfigured()) registerDemo(email, input.password, profileId)
         draft.students.unshift({
           id,
@@ -562,13 +974,22 @@ export function LmsProvider({ children }) {
           name: input.name.trim(),
           email,
           phone: (input.phone || '').replace(/\D/g, '').slice(-10),
+          experience: input.experience?.trim() || '',
           rollNo,
           courseId: input.courseId,
           batchId: input.batchId,
           status: 'active',
           admissionDate: todayISO(),
           guardian: input.guardian?.trim() || '',
+          gender: '',
+          dateOfBirth: '',
+          whatsapp: (input.phone || '').replace(/\D/g, '').slice(-10),
           documents: input.documents || [],
+          bookmarks: [],
+          education: [],
+          projects: [],
+          experiences: [],
+          certificates: [],
           createdBy: actor.id,
           notes: input.notes?.trim() || '',
         })
@@ -583,9 +1004,31 @@ export function LmsProvider({ children }) {
           dueDate: input.dueDate || '',
         })
       }, `Registered student ${input.name?.trim()}`, 'Student registered.')
+      if (result && avatarError) pushToast(`Student registered, but the profile picture was not saved: ${avatarError}`, 'error')
+      return result
     },
 
-    updateStudent(id, input) {
+    async updateStudent(id, input) {
+      const currentStudent = stateRef.current.students.find((item) => item.id === id)
+      if (!currentStudent) {
+        pushToast('Student not found.', 'error')
+        return null
+      }
+      if (input.avatarFile && (!input.avatarFile.type?.startsWith('image/') || input.avatarFile.size > 2 * 1024 * 1024)) {
+        pushToast('Choose an image file that is 2 MB or smaller.', 'error')
+        return null
+      }
+      let avatarUrl = currentStudent.avatarUrl || ''
+      try {
+        if (input.avatarFile) {
+          avatarUrl = isSupabaseConfigured() && currentStudent.userId
+            ? await uploadProfileAvatar(currentStudent.userId, input.avatarFile)
+            : await readImageDataUrl(input.avatarFile)
+        }
+      } catch (error) {
+        pushToast(error.message || 'Could not save the profile picture.', 'error')
+        return null
+      }
       return commit(['students.write', 'students.register'], (draft, actor) => {
         const student = draft.students.find((item) => item.id === id)
         if (!student) throw new Error('Student not found.')
@@ -594,6 +1037,13 @@ export function LmsProvider({ children }) {
         student.name = input.name?.trim() || student.name
         student.email = input.email?.trim() ?? student.email
         student.phone = input.phone != null ? input.phone.replace(/\D/g, '').slice(-10) : student.phone
+        student.experience = input.experience?.trim() ?? student.experience ?? ''
+        student.avatarUrl = avatarUrl
+        const profile = draft.profiles.find((item) => item.id === student.userId)
+        if (profile) {
+          profile.experience = student.experience
+          profile.avatarUrl = avatarUrl
+        }
         student.guardian = input.guardian ?? student.guardian
         student.documents = input.documents || student.documents
         student.notes = actor.role === 'admin' ? input.notes ?? student.notes : student.notes
@@ -627,23 +1077,91 @@ export function LmsProvider({ children }) {
 
     async deleteStudent(id) {
       const student = stateRef.current.students.find((item) => item.id === id)
-      try {
-        if (student?.userId) await syncAccess(student.userId, false)
-      } catch (error) {
-        pushToast(error.message || 'Could not remove access.', 'error')
+      if (!student) {
+        pushToast('Student not found.', 'error')
         return null
       }
-      return commit('students.delete', (draft) => {
+      if (!hasPermission(sessionRef.current?.role, 'students.delete')) {
+        pushToast('You do not have permission to delete students.', 'error')
+        return null
+      }
+      let deleteWarning = ''
+      try {
+        if (isSupabaseConfigured() && isCloudId(student.id)) {
+          const result = await deleteStudentWithSupabase(student.id, student.userId)
+          deleteWarning = result?.warning || ''
+        }
+      } catch (error) {
+        pushToast(error.message || 'Could not delete the student account.', 'error')
+        return null
+      }
+      const result = commit('students.delete', (draft) => {
         const student = draft.students.find((item) => item.id === id)
         if (!student) throw new Error('Student not found.')
         draft.students = draft.students.filter((item) => item.id !== id)
         draft.feeRecords = draft.feeRecords.filter((item) => item.studentId !== id)
         draft.attendance = draft.attendance.filter((item) => item.studentId !== id)
+        draft.payments = (draft.payments || []).filter((item) => item.studentId !== id)
+        draft.admissions = (draft.admissions || []).filter((item) => item.studentId !== id)
+        draft.attempts = (draft.attempts || []).filter((item) => item.studentId !== id)
+        draft.submissions = (draft.submissions || []).filter((item) => item.studentId !== id)
         if (student.userId) {
-          const profile = draft.profiles.find((item) => item.id === student.userId)
-          if (profile) profile.active = false
+          draft.profiles = draft.profiles.filter((item) => item.id !== student.userId)
+          draft.notificationReads = { ...(draft.notificationReads || {}) }
+          delete draft.notificationReads[student.userId]
         }
       }, 'Deleted student record', 'Student removed.')
+      if (result && deleteWarning) pushToast(`Student was deleted, but its activity could not be logged: ${deleteWarning}`, 'error')
+      return result
+    },
+
+    async deletePerson(userId) {
+      const actor = sessionRef.current
+      const profile = stateRef.current.profiles.find((item) => item.id === userId)
+      if (actor?.role !== 'admin') {
+        pushToast('Only an admin can permanently delete an account.', 'error')
+        return null
+      }
+      if (!profile) {
+        pushToast('Person not found.', 'error')
+        return null
+      }
+      if (userId === actor.id) {
+        pushToast('You cannot delete your own account.', 'error')
+        return null
+      }
+      if (profile.role === 'admin' && profile.active && stateRef.current.profiles.filter((item) => item.role === 'admin' && item.active && item.id !== userId).length === 0) {
+        pushToast('The last active admin cannot be deleted.', 'error')
+        return null
+      }
+      let deleteWarning = ''
+      try {
+        if (isSupabaseConfigured() && isCloudId(userId)) {
+          const result = await deletePersonWithSupabase(userId)
+          deleteWarning = result?.warning || ''
+        }
+      } catch (error) {
+        pushToast(error.message || 'Could not delete the account.', 'error')
+        return null
+      }
+      const result = commit('staff.manage', (draft) => {
+        const faculty = draft.faculty.find((item) => item.userId === userId)
+        if (faculty) {
+          draft.batches.forEach((batch) => {
+            if (batch.facultyId === faculty.id) batch.facultyId = ''
+          })
+          draft.faculty = draft.faculty.filter((item) => item.userId !== userId)
+          draft.facultyAttendance = (draft.facultyAttendance || []).filter((item) => item.personId !== userId && item.facultyId !== faculty.id)
+        }
+        draft.receptionists = draft.receptionists.filter((item) => item.userId !== userId)
+        draft.counsellors = draft.counsellors.filter((item) => item.userId !== userId)
+        draft.accountants = draft.accountants.filter((item) => item.userId !== userId)
+        draft.profiles = draft.profiles.filter((item) => item.id !== userId)
+        draft.notificationReads = { ...(draft.notificationReads || {}) }
+        delete draft.notificationReads[userId]
+      }, `Deleted ${profile.role} account`, 'Account permanently deleted.')
+      if (result && deleteWarning) pushToast(`Account was deleted, but its activity could not be logged: ${deleteWarning}`, 'error')
+      return result
     },
 
     async addFaculty(input) {
@@ -654,6 +1172,10 @@ export function LmsProvider({ children }) {
       }
       if (!input.name?.trim() || !input.email?.trim()) {
         pushToast('Name and email are required.', 'error')
+        return null
+      }
+      if (input.avatarFile && (!input.avatarFile.type?.startsWith('image/') || input.avatarFile.size > 2 * 1024 * 1024)) {
+        pushToast('Choose an image file that is 2 MB or smaller.', 'error')
         return null
       }
       const email = input.email.trim().toLowerCase()
@@ -674,6 +1196,7 @@ export function LmsProvider({ children }) {
             designation: input.designation,
             qualification: input.qualification,
             specialization: input.specialization,
+            experience: input.experience || '',
           })
           profileId = created.id
         }
@@ -681,13 +1204,26 @@ export function LmsProvider({ children }) {
         pushToast(error.message || 'Could not create the faculty login.', 'error')
         return null
       }
-      return commit('faculty.manage', (draft) => {
+      let avatarUrl = ''
+      let avatarError = ''
+      if (input.avatarFile) {
+        try {
+          avatarUrl = isSupabaseConfigured()
+            ? await uploadProfileAvatar(profileId, input.avatarFile)
+            : await readImageDataUrl(input.avatarFile)
+        } catch (error) {
+          avatarError = error.message || 'Could not save the profile picture.'
+        }
+      }
+      const result = commit('faculty.manage', (draft) => {
         const local = draft.profiles.find((item) => item.email === email && !isCloudId(item.id))
         if (local) {
           const oldId = local.id
           local.id = profileId
           local.name = input.name.trim()
           local.phone = (input.phone || '').replace(/\D/g, '').slice(-10)
+          local.experience = input.experience?.trim() || ''
+          if (avatarUrl) local.avatarUrl = avatarUrl
           local.active = true
           const faculty = draft.faculty.find((item) => item.userId === oldId)
           if (faculty) {
@@ -703,7 +1239,7 @@ export function LmsProvider({ children }) {
         }
         if (draft.profiles.some((item) => item.email === email)) throw new Error('An account with this email already exists.')
         const facultyId = uid('fac')
-        draft.profiles.push({ id: profileId, name: input.name.trim(), email, phone: (input.phone || '').replace(/\D/g, '').slice(-10), role: 'faculty', active: true })
+        draft.profiles.push({ id: profileId, name: input.name.trim(), email, phone: (input.phone || '').replace(/\D/g, '').slice(-10), experience: input.experience?.trim() || '', avatarUrl, role: 'faculty', active: true })
         draft.faculty.unshift({
           id: facultyId,
           userId: profileId,
@@ -718,6 +1254,8 @@ export function LmsProvider({ children }) {
         if (!isSupabaseConfigured()) registerDemo(email, input.password, profileId)
         syncBatches(draft, facultyId, input.batchIds || [])
       }, `Created faculty account for ${input.name?.trim()}`, 'Faculty account created.')
+      if (result && avatarError) pushToast(`Faculty account created, but the profile picture was not saved: ${avatarError}`, 'error')
+      return result
     },
 
     updateFaculty(id, input) {
@@ -728,6 +1266,7 @@ export function LmsProvider({ children }) {
         if (profile) {
           profile.name = input.name?.trim() || profile.name
           profile.phone = (input.phone || '').replace(/\D/g, '').slice(-10)
+          profile.experience = input.experience?.trim() || ''
         }
         faculty.designation = input.designation?.trim() || faculty.designation
         faculty.qualification = input.qualification?.trim() || ''
@@ -740,7 +1279,7 @@ export function LmsProvider({ children }) {
     async setFacultyStatus(id, status) {
       const faculty = stateRef.current.faculty.find((item) => item.id === id)
       try {
-        if (faculty?.userId) await syncAccess(faculty.userId, status === 'active')
+        if (faculty?.userId) await syncAccess(faculty.userId, status === 'active', status)
       } catch (error) {
         pushToast(error.message || 'Could not update access.', 'error')
         return null
@@ -759,7 +1298,7 @@ export function LmsProvider({ children }) {
     async removeFacultyAccess(id) {
       const faculty = stateRef.current.faculty.find((item) => item.id === id)
       try {
-        if (faculty?.userId) await syncAccess(faculty.userId, false)
+        if (faculty?.userId) await syncAccess(faculty.userId, false, 'removed')
       } catch (error) {
         pushToast(error.message || 'Could not remove access.', 'error')
         return null
@@ -784,12 +1323,16 @@ export function LmsProvider({ children }) {
         pushToast(passwordError, 'error')
         return null
       }
-      if (!['receptionist', 'counsellor', 'accountant'].includes(input.role)) {
+      if (!['admin', 'receptionist', 'counsellor', 'accountant'].includes(input.role) || (input.role === 'admin' && sessionRef.current?.role !== 'admin')) {
         pushToast('You cannot create this role here.', 'error')
         return null
       }
       if (!input.name?.trim() || !input.email?.trim()) {
         pushToast('Name and email are required.', 'error')
+        return null
+      }
+      if (input.avatarFile && (!input.avatarFile.type?.startsWith('image/') || input.avatarFile.size > 2 * 1024 * 1024)) {
+        pushToast('Choose an image file that is 2 MB or smaller.', 'error')
         return null
       }
       const email = input.email.trim().toLowerCase()
@@ -809,6 +1352,7 @@ export function LmsProvider({ children }) {
             password: input.password,
             shift: input.shift,
             focus: input.focus,
+            experience: input.experience || '',
           })
           profileId = created.id
         }
@@ -816,13 +1360,26 @@ export function LmsProvider({ children }) {
         pushToast(error.message || 'Could not create the login.', 'error')
         return null
       }
-      return commit('staff.manage', (draft) => {
+      let avatarUrl = ''
+      let avatarError = ''
+      if (input.avatarFile) {
+        try {
+          avatarUrl = isSupabaseConfigured()
+            ? await uploadProfileAvatar(profileId, input.avatarFile)
+            : await readImageDataUrl(input.avatarFile)
+        } catch (error) {
+          avatarError = error.message || 'Could not save the profile picture.'
+        }
+      }
+      const result = commit('staff.manage', (draft) => {
         const local = draft.profiles.find((item) => item.email === email && !isCloudId(item.id))
         if (local) {
           const oldId = local.id
           local.id = profileId
           local.name = input.name.trim()
           local.phone = (input.phone || '').replace(/\D/g, '').slice(-10)
+          local.experience = input.experience?.trim() || ''
+          if (avatarUrl) local.avatarUrl = avatarUrl
           local.role = input.role
           local.active = true
           const lists = { receptionist: draft.receptionists, counsellor: draft.counsellors, accountant: draft.accountants }
@@ -831,13 +1388,15 @@ export function LmsProvider({ children }) {
           return
         }
         if (draft.profiles.some((item) => item.email === email)) throw new Error('An account with this email already exists.')
-        draft.profiles.push({ id: profileId, name: input.name.trim(), email, phone: (input.phone || '').replace(/\D/g, '').slice(-10), role: input.role, active: true })
+        draft.profiles.push({ id: profileId, name: input.name.trim(), email, phone: (input.phone || '').replace(/\D/g, '').slice(-10), experience: input.experience?.trim() || '', avatarUrl, role: input.role, active: true })
         const row = { id: uid(input.role.slice(0, 3)), userId: profileId }
         if (input.role === 'receptionist') draft.receptionists.unshift({ ...row, shift: input.shift || 'Morning', desk: 'Front office' })
         if (input.role === 'counsellor') draft.counsellors.unshift({ ...row, focus: input.focus || 'Admissions' })
         if (input.role === 'accountant') draft.accountants.unshift({ ...row, desk: 'Accounts' })
         if (!isSupabaseConfigured()) registerDemo(email, input.password, profileId)
       }, `Created ${input.role} account for ${input.name?.trim()}`, 'Staff account created. They can sign in with this email and password.')
+      if (result && avatarError) pushToast(`Account created, but the profile picture was not saved: ${avatarError}`, 'error')
+      return result
     },
 
     async setStaffStatus(profileId, active) {
@@ -850,7 +1409,9 @@ export function LmsProvider({ children }) {
       return commit('staff.manage', (draft, actor) => {
         if (profileId === actor.id) throw new Error('You cannot change your own access.')
         const profile = draft.profiles.find((item) => item.id === profileId)
-        if (!profile || profile.role === 'faculty' || profile.role === 'admin') throw new Error('Use the matching management page for this account.')
+        if (!profile || profile.role === 'faculty') throw new Error('Use the matching management page for this account.')
+        if (profile.role === 'admin' && actor.role !== 'admin') throw new Error('Only an admin can change another admin account.')
+        if (profile.role === 'admin' && !active && draft.profiles.filter((item) => item.role === 'admin' && item.active).length <= 1) throw new Error('The last active admin cannot be deactivated.')
         profile.active = active
       }, `${active ? 'Activated' : 'Deactivated'} staff account`)
     },
@@ -901,6 +1462,29 @@ export function LmsProvider({ children }) {
           modules: [],
         })
       }, input.id ? 'Updated course' : `Created course ${input.name?.trim()}`)
+    },
+
+    async deleteCourse(id) {
+      if (!hasPermission(sessionRef.current?.role, 'courses.manage')) {
+        pushToast('You do not have permission to delete courses.', 'error')
+        return null
+      }
+      const current = stateRef.current
+      if (current.batches.some((batch) => batch.courseId === id) || current.students.some((student) => student.courseId === id) || (current.admissions || []).some((admission) => admission.courseId === id)) {
+        pushToast('This course is linked to a batch, student, or admission. Move those records before deleting the course.', 'error')
+        return null
+      }
+      try {
+        if (isSupabaseConfigured()) await deleteCourseFromSupabase(id)
+      } catch (error) {
+        pushToast(error.message || 'Could not delete the course.', 'error')
+        return null
+      }
+      return commit('courses.manage', (draft) => {
+        if (!draft.courses.some((item) => item.id === id)) throw new Error('Course not found.')
+        draft.courses = draft.courses.filter((item) => item.id !== id)
+        draft.subjects = draft.subjects.filter((item) => item.courseId !== id)
+      }, 'Deleted a course', 'Course deleted.')
     },
 
     saveSubject(input) {
@@ -972,6 +1556,48 @@ export function LmsProvider({ children }) {
       }, input.id ? 'Updated batch' : 'Created batch')
     },
 
+    async deleteBatch(id) {
+      if (!hasPermission(sessionRef.current?.role, 'batches.delete')) {
+        pushToast('You do not have permission to delete batches.', 'error')
+        return null
+      }
+      const current = stateRef.current
+      if (!current.batches.some((batch) => batch.id === id)) {
+        pushToast('Batch not found.', 'error')
+        return null
+      }
+      if (current.students.some((student) => student.batchId === id)) {
+        pushToast('Move or remove the students in this batch before deleting it.', 'error')
+        return null
+      }
+      if ((current.admissions || []).some((admission) => admission.batchId === id)) {
+        pushToast('Resolve the admissions linked to this batch before deleting it.', 'error')
+        return null
+      }
+      try {
+        if (isSupabaseConfigured()) await deleteBatchFromSupabase(id)
+      } catch (error) {
+        pushToast(error.message || 'Could not delete the batch from Supabase.', 'error')
+        return null
+      }
+      return commit('batches.delete', (draft) => {
+        const examIds = new Set(draft.exams.filter((exam) => exam.batchId === id).map((exam) => exam.id))
+        const assignmentIds = new Set(draft.assignments.filter((assignment) => assignment.batchId === id).map((assignment) => assignment.id))
+        const facultyIds = new Set(draft.faculty.filter((faculty) => faculty.batchIds.includes(id)).map((faculty) => faculty.id))
+        draft.batches = draft.batches.filter((batch) => batch.id !== id)
+        draft.faculty.forEach((faculty) => {
+          faculty.batchIds = faculty.batchIds.filter((batchId) => batchId !== id)
+        })
+        draft.exams = draft.exams.filter((exam) => exam.batchId !== id)
+        draft.attempts = draft.attempts.filter((attempt) => !examIds.has(attempt.examId))
+        draft.assignments = draft.assignments.filter((assignment) => assignment.batchId !== id)
+        draft.submissions = draft.submissions.filter((submission) => !assignmentIds.has(submission.assignmentId))
+        draft.materials = draft.materials.filter((material) => material.batchId !== id)
+        draft.attendance = draft.attendance.filter((row) => row.batchId !== id)
+        draft.facultyAttendance = draft.facultyAttendance.filter((row) => !facultyIds.has(row.facultyId))
+      }, 'Deleted batch', 'Batch deleted.')
+    },
+
     saveAttendance(batchId, date, marks) {
       return commit('attendance.mark', (draft, actor) => {
         assertAssignedBatch(draft, actor, batchId)
@@ -1017,16 +1643,62 @@ export function LmsProvider({ children }) {
       }, 'Removed study material', 'Material removed.')
     },
 
-    saveExam(input) {
+    async saveExam(input) {
+      const actor = sessionRef.current
+      if (!actor || !hasPermission(actor.role, 'exams.manage')) {
+        pushToast('You do not have permission to manage examinations.', 'error')
+        return null
+      }
+      if (!input.title?.trim() || !input.batchId) {
+        pushToast('Title and batch are required.', 'error')
+        return null
+      }
+      if (!input.questions?.length) {
+        pushToast('Add at least one question.', 'error')
+        return null
+      }
+      if (input.id && !stateRef.current.exams.some((exam) => exam.id === input.id)) {
+        pushToast('Exam not found.', 'error')
+        return null
+      }
+      try {
+        assertAssignedBatch(stateRef.current, actor, input.batchId)
+      } catch (error) {
+        pushToast(error.message, 'error')
+        return null
+      }
+      let remoteExam = null
+      if (isSupabaseConfigured()) {
+        if (!isCloudId(input.batchId)) {
+          pushToast('Save this batch to Supabase before creating an examination.', 'error')
+          return null
+        }
+        try {
+          const faculty = actor?.role === 'faculty'
+            ? facultyOf(stateRef.current, actor.id)
+            : stateRef.current.faculty.find((item) => item.batchIds.includes(input.batchId))
+          remoteExam = await saveExamToSupabase({
+            ...input,
+            facultyId: faculty?.id && isCloudId(faculty.id) ? faculty.id : null,
+            status: input.status || 'published',
+          })
+        } catch (error) {
+          pushToast(error.message || 'Could not save the examination to Supabase.', 'error')
+          return null
+        }
+      }
       return commit('exams.manage', (draft, actor) => {
         if (!input.title?.trim() || !input.batchId) throw new Error('Title and batch are required.')
         assertAssignedBatch(draft, actor, input.batchId)
         const faculty = actor.role === 'faculty' ? facultyOf(draft, actor.id) : draft.faculty.find((item) => item.batchIds.includes(input.batchId))
-        const questions = (input.questions || []).map((question) => ({
+        const questions = (input.questions || []).map((question, index) => ({
           ...question,
-          id: question.id || uid('q'),
+          id: remoteExam?.questions[index]?.id || question.id || uid('q'),
           marks: Number(question.marks) || 1,
-          testcases: (question.testcases || []).map((testcase) => ({ ...testcase, id: testcase.id || uid('t') })),
+          testcases: (question.testcases || []).map((testcase, caseIndex) => ({
+            ...testcase,
+            id: remoteExam?.questions[index]?.testcases[caseIndex]?.id || testcase.id || uid('t'),
+          })),
         }))
         if (!questions.length) throw new Error('Add at least one question.')
         if (input.id) {
@@ -1037,20 +1709,28 @@ export function LmsProvider({ children }) {
           return
         }
         draft.exams.unshift({
-          id: uid('exam'),
+          id: remoteExam?.id || uid('exam'),
           title: input.title.trim(),
           kind: input.kind || 'mcq',
           batchId: input.batchId,
           subjectId: input.subjectId || '',
-          facultyId: faculty?.id || '',
+          facultyId: remoteExam?.facultyId || faculty?.id || '',
           durationMin: Number(input.durationMin) || 30,
-          status: 'draft',
+          status: input.status || remoteExam?.status || 'published',
           questions,
         })
-      }, input.id ? 'Updated examination' : 'Created examination', input.id ? 'Examination updated.' : 'Examination saved as draft.')
+      }, input.id ? 'Updated examination' : 'Created examination', input.id ? 'Examination updated.' : 'Examination published for students.')
     },
 
-    setExamStatus(id, status) {
+    async setExamStatus(id, status) {
+      if (isSupabaseConfigured()) {
+        try {
+          await setExamStatusInSupabase(id, status)
+        } catch (error) {
+          pushToast(error.message || 'Could not update the examination.', 'error')
+          return null
+        }
+      }
       return commit('exams.manage', (draft, actor) => {
         const exam = draft.exams.find((item) => item.id === id)
         if (!exam) throw new Error('Exam not found.')
@@ -1115,7 +1795,11 @@ export function LmsProvider({ children }) {
         if (!attempt) throw new Error('Submission not found.')
         const exam = draft.exams.find((item) => item.id === attempt.examId)
         assertAssignedBatch(draft, actor, exam?.batchId)
-        attempt.score = Number(marks) || 0
+        const score = Number(marks)
+        const maximum = (exam?.questions || []).reduce((sum, question) => sum + (Number(question.marks) || 0), 0)
+        if (!Number.isFinite(score) || score < 0 || score > maximum) throw new Error(`Enter a score from 0 to ${maximum}.`)
+        attempt.score = score
+        attempt.total = maximum
         attempt.feedback = feedback || ''
         attempt.status = 'evaluated'
       }, 'Evaluated examination submission')
@@ -1274,49 +1958,86 @@ export function LmsProvider({ children }) {
         if (!enquiry) throw new Error('Enquiry not found.')
         if (!input.courseId || !input.batchId) throw new Error('Course and batch are required.')
         const batch = draft.batches.find((item) => item.id === input.batchId)
-        if (!batch || batch.courseId !== input.courseId) throw new Error('Choose a batch that belongs to the selected course.')
-        const occupied = draft.students.filter((student) => student.batchId === batch.id && student.status !== 'inactive').length
+        if (!batch || batch.courseId !== input.courseId || !['running', 'waiting'].includes(batch.status)) throw new Error('Choose a running or waiting batch for the selected course.')
+        const existingAdmission = draft.admissions.find((item) => item.enquiryId === enquiryId)
+        if (existingAdmission && existingAdmission.status !== 'processing') throw new Error('This enquiry already has an enrolled admission.')
+        const existingStudent = existingAdmission && draft.students.find((item) => item.id === existingAdmission.studentId)
+        if (existingAdmission && !existingStudent) throw new Error('The pending admission has no student record.')
+        const occupied = draft.students.filter((student) => student.id !== existingStudent?.id && student.batchId === batch.id && student.status !== 'inactive').length
         if (occupied >= batch.seats) throw new Error('This batch is full.')
+        if (input.enquiry) {
+          enquiry.name = input.enquiry.name?.trim() || enquiry.name
+          enquiry.phone = (input.enquiry.phone || enquiry.phone).replace(/\D/g, '').slice(-10)
+          enquiry.email = input.enquiry.email?.trim() || ''
+          enquiry.courseId = input.courseId
+          enquiry.source = input.enquiry.source || enquiry.source
+          enquiry.followUpDate = input.enquiry.followUpDate || enquiry.followUpDate
+          enquiry.remarks = input.enquiry.remarks?.trim() || ''
+          if (input.enquiry.note?.trim()) enquiry.history.unshift({ at: new Date().toISOString(), note: input.enquiry.note.trim(), by: actor.name })
+        }
         const processing = input.mode === 'processing'
-        const studentId = uid('stu')
         const course = draft.courses.find((item) => item.id === input.courseId)
-        draft.students.unshift({
-          id: studentId,
-          userId: null,
-          name: enquiry.name,
-          email: enquiry.email,
-          phone: enquiry.phone,
-          rollNo: `C2C26${String(draft.students.length + 1).padStart(3, '0')}`,
-          courseId: input.courseId,
-          batchId: input.batchId,
-          status: processing ? 'pending' : 'active',
-          admissionDate: todayISO(),
-          guardian: input.guardian || '',
-          documents: input.documents || [],
-          createdBy: actor.id,
-          notes: '',
-        })
-        draft.feeRecords.unshift({
-          id: uid('fee'),
-          studentId,
-          courseFee: course?.fee || 0,
-          discount: 0,
-          total: course?.fee || 0,
-          paid: 0,
-          pending: course?.fee || 0,
-          dueDate: '',
-        })
-        draft.admissions.unshift({
-          id: uid('adm'),
-          enquiryId,
-          studentId,
-          courseId: input.courseId,
-          batchId: input.batchId,
-          documents: input.documents || [],
-          status: processing ? 'processing' : 'enrolled',
-          counsellorId: enquiry.counsellorId || actor.id,
-          createdAt: todayISO(),
-        })
+        let studentId
+        if (existingStudent && existingAdmission) {
+          studentId = existingStudent.id
+          existingStudent.name = enquiry.name
+          existingStudent.email = enquiry.email
+          existingStudent.phone = enquiry.phone
+          existingStudent.courseId = input.courseId
+          existingStudent.batchId = input.batchId
+          existingStudent.status = processing ? 'pending' : 'active'
+          existingStudent.guardian = input.guardian || existingStudent.guardian || ''
+          existingStudent.documents = input.documents || existingStudent.documents || []
+          existingAdmission.courseId = input.courseId
+          existingAdmission.batchId = input.batchId
+          existingAdmission.documents = input.documents || existingAdmission.documents || []
+          existingAdmission.status = processing ? 'processing' : 'enrolled'
+          const fee = draft.feeRecords.find((item) => item.studentId === studentId)
+          if (fee && fee.total === fee.courseFee) {
+            fee.courseFee = course?.fee || 0
+            fee.total = course?.fee || 0
+            fee.pending = Math.max(fee.total - fee.discount - fee.paid, 0)
+          }
+        } else {
+          studentId = uid('stu')
+          draft.students.unshift({
+            id: studentId,
+            userId: null,
+            name: enquiry.name,
+            email: enquiry.email,
+            phone: enquiry.phone,
+            rollNo: `C2C26${String(draft.students.length + 1).padStart(3, '0')}`,
+            courseId: input.courseId,
+            batchId: input.batchId,
+            status: processing ? 'pending' : 'active',
+            admissionDate: todayISO(),
+            guardian: input.guardian || '',
+            documents: input.documents || [],
+            createdBy: actor.id,
+            notes: '',
+          })
+          draft.feeRecords.unshift({
+            id: uid('fee'),
+            studentId,
+            courseFee: course?.fee || 0,
+            discount: 0,
+            total: course?.fee || 0,
+            paid: 0,
+            pending: course?.fee || 0,
+            dueDate: '',
+          })
+          draft.admissions.unshift({
+            id: uid('adm'),
+            enquiryId,
+            studentId,
+            courseId: input.courseId,
+            batchId: input.batchId,
+            documents: input.documents || [],
+            status: processing ? 'processing' : 'enrolled',
+            counsellorId: enquiry.counsellorId || actor.id,
+            createdAt: todayISO(),
+          })
+        }
         enquiry.status = processing ? 'interested' : 'converted'
         enquiry.history.unshift({ at: new Date().toISOString(), note: processing ? 'Admission submitted for processing.' : 'Converted to an enrolled student.', by: actor.name })
       }, 'Processed admission', input.mode === 'processing' ? 'Admission submitted for processing.' : 'Student enrolled.')
@@ -1377,16 +2098,32 @@ export function LmsProvider({ children }) {
       }, `${status === 'verified' ? 'Verified' : 'Rejected'} payment`)
     },
 
-    addNotification(input) {
+    async addNotification(input) {
+      if (!hasPermission(sessionRef.current?.role, 'notifications.manage')) {
+        pushToast('You do not have permission to publish notifications.', 'error')
+        return null
+      }
+      if (!input.title?.trim() || !input.body?.trim()) {
+        pushToast('Title and message are required.', 'error')
+        return null
+      }
+      const notification = {
+        id: uid('nt'),
+        title: input.title.trim(),
+        body: input.body.trim(),
+        audience: input.audience || 'all',
+        createdAt: new Date().toISOString(),
+      }
+      try {
+        const saved = await saveNotificationToSupabase(notification)
+        if (saved) Object.assign(notification, saved)
+      } catch (error) {
+        pushToast(error.message || 'Could not publish the notification.', 'error')
+        return null
+      }
       return commit('notifications.manage', (draft) => {
         if (!input.title?.trim() || !input.body?.trim()) throw new Error('Title and message are required.')
-        draft.notifications.unshift({
-          id: uid('nt'),
-          title: input.title.trim(),
-          body: input.body.trim(),
-          audience: input.audience || 'all',
-          createdAt: new Date().toISOString(),
-        })
+        draft.notifications.unshift(notification)
       }, 'Published a notification', 'Notification sent.')
     },
 
@@ -1404,14 +2141,43 @@ export function LmsProvider({ children }) {
     },
 
     markFacultyAttendance(facultyId, status) {
+      const faculty = stateRef.current.faculty.find((item) => item.id === facultyId)
+      if (!faculty) {
+        pushToast('Faculty member not found.', 'error')
+        return null
+      }
+      return api.markStaffAttendance(faculty.userId, 'teaching', status)
+    },
+
+    async markStaffAttendance(profileId, category, status) {
+      const date = todayISO()
+      const actor = sessionRef.current
+      const profile = stateRef.current.profiles.find((item) => item.id === profileId && item.active)
+      if (!actor || !hasPermission(actor.role, 'attendance.faculty')) {
+        pushToast('You do not have permission to mark staff attendance.', 'error')
+        return null
+      }
+      if (!['teaching', 'non-teaching'].includes(category) || !['present', 'absent'].includes(status)) {
+        pushToast('Choose a valid attendance category and status.', 'error')
+        return null
+      }
+      if (!profile || (category === 'teaching' ? profile.role !== 'faculty' : ['faculty', 'student'].includes(profile.role))) {
+        pushToast('This person is not in the selected staff category.', 'error')
+        return null
+      }
+      try {
+        if (isSupabaseConfigured()) {
+          await saveStaffAttendanceToSupabase({ profileId, category, date, status, markedBy: actor.id })
+        }
+      } catch (error) {
+        pushToast(error.message || 'Could not save staff attendance.', 'error')
+        return null
+      }
       return commit('attendance.faculty', (draft, actor) => {
-        const faculty = draft.faculty.find((item) => item.id === facultyId)
-        if (!faculty) throw new Error('Faculty member not found.')
-        const date = todayISO()
-        const existing = draft.facultyAttendance.find((item) => item.facultyId === facultyId && item.date === date)
+        const existing = draft.facultyAttendance.find((item) => item.personId === profileId && item.category === category && item.date === date)
         if (existing) existing.status = status
-        else draft.facultyAttendance.unshift({ id: uid('fatt'), facultyId, date, status, markedBy: actor.name })
-      }, 'Marked faculty attendance', 'Faculty attendance saved.')
+        else draft.facultyAttendance.unshift({ id: uid('fatt'), personId: profileId, category, date, status, markedBy: actor.name })
+      }, 'Marked staff attendance', 'Staff attendance saved.')
     },
 
     async saveWorkshop(input) {
@@ -1429,7 +2195,7 @@ export function LmsProvider({ children }) {
         pushToast(error.message || 'Could not store the workshop in Supabase.', 'error')
         return null
       }
-      return commit('workshops.manage', (draft) => {
+      const result = commit('workshops.manage', (draft) => {
         if (!input.title?.trim()) throw new Error('Workshop title is required.')
         if (input.id) {
           const row = draft.workshops.find((item) => item.id === input.id)
@@ -1439,11 +2205,63 @@ export function LmsProvider({ children }) {
         }
         draft.workshops.unshift({ id: workshopId, title: input.title.trim(), date: input.date || '', mode: input.mode || 'Campus', seats: Number(input.seats) || 20, blurb: input.blurb || '', status: 'open' })
       }, input.id ? 'Updated a workshop' : 'Added a workshop', 'Workshop saved.')
+      if (result && !input.id) await publishBroadcastNotification('New workshop posted', `${input.title.trim()} · ${input.date || 'Date to be announced'} · ${input.mode || 'Campus'}`)
+      return result
+    },
+
+    async setWorkshopStatus(id, status) {
+      if (!['open', 'closed'].includes(status)) {
+        pushToast('Choose open or closed for this workshop.', 'error')
+        return null
+      }
+      const current = stateRef.current.workshops.find((item) => item.id === id)
+      if (!current) {
+        pushToast('Workshop not found.', 'error')
+        return null
+      }
+      let workshopId = id
+      try {
+        if (isSupabaseConfigured()) {
+          const saved = await saveWorkshopToSupabase({ ...current, status })
+          workshopId = saved.id
+        }
+      } catch (error) {
+        pushToast(error.message || 'Could not update the workshop.', 'error')
+        return null
+      }
+      return commit('workshops.manage', (draft) => {
+        const row = draft.workshops.find((item) => item.id === id)
+        if (!row) throw new Error('Workshop not found.')
+        row.id = workshopId
+        row.status = status
+      }, `${status === 'open' ? 'Opened' : 'Closed'} a workshop`, `Workshop ${status}.`)
+    },
+
+    async deleteWorkshop(id) {
+      try {
+        if (isSupabaseConfigured()) await deleteWorkshopFromSupabase(id)
+      } catch (error) {
+        pushToast(error.message || 'Could not delete the workshop.', 'error')
+        return null
+      }
+      return commit('workshops.manage', (draft) => {
+        if (!draft.workshops.some((item) => item.id === id)) throw new Error('Workshop not found.')
+        draft.workshops = draft.workshops.filter((item) => item.id !== id)
+      }, 'Deleted a workshop', 'Workshop deleted.')
     },
 
     async saveJob(input) {
-      if (!input.title?.trim()) {
-        pushToast('Role title is required.', 'error')
+      if (!hasPermission(sessionRef.current?.role, 'jobs.manage')) {
+        pushToast('You do not have permission to publish jobs.', 'error')
+        return null
+      }
+      const applyUrl = input.applyUrl?.trim() ? safeExternalUrl(input.applyUrl.trim()) : ''
+      if (input.applyUrl?.trim() && !applyUrl) {
+        pushToast('Enter a valid application link starting with https://.', 'error')
+        return null
+      }
+      if (!input.title?.trim() || !input.company?.trim() || !input.skills?.trim() || !input.place?.trim() || !input.salary?.trim()) {
+        pushToast('Job title, company, skills, location, and salary are required.', 'error')
         return null
       }
       let jobId = input.id || uid('job')
@@ -1456,16 +2274,54 @@ export function LmsProvider({ children }) {
         pushToast(error.message || 'Could not store the opening in Supabase.', 'error')
         return null
       }
-      return commit('careers.manage', (draft) => {
-        if (!input.title?.trim()) throw new Error('Role title is required.')
+      const result = commit('jobs.manage', (draft) => {
+        if (!input.title?.trim() || !input.company?.trim() || !input.skills?.trim() || !input.place?.trim() || !input.salary?.trim()) {
+          throw new Error('Job title, company, skills, location, and salary are required.')
+        }
         if (input.id) {
           const row = draft.jobs.find((item) => item.id === input.id)
           if (!row) throw new Error('Role not found.')
-          Object.assign(row, { id: jobId, title: input.title.trim(), type: input.type || '', place: input.place || 'Campus', blurb: input.blurb || '', open: input.open !== false })
+          Object.assign(row, { id: jobId, title: input.title.trim(), company: input.company.trim(), type: input.type || 'FULL TIME', industry: input.industry || 'IT', skills: input.skills.trim(), place: input.place.trim(), salary: input.salary.trim(), applyUrl, blurb: input.blurb || '', open: input.open !== false, studentOnly: true })
           return
         }
-        draft.jobs.unshift({ id: jobId, title: input.title.trim(), type: input.type || 'Full-time', place: input.place || 'Campus', blurb: input.blurb || '', open: true })
-      }, input.id ? 'Updated a role' : 'Added a role', 'Career listing saved.')
+        draft.jobs.unshift({ id: jobId, title: input.title.trim(), company: input.company.trim(), type: input.type || 'FULL TIME', industry: input.industry || 'IT', skills: input.skills.trim(), place: input.place.trim(), salary: input.salary.trim(), applyUrl, blurb: input.blurb || '', open: input.open !== false, studentOnly: true })
+      }, input.id ? 'Updated a job posting' : 'Posted a job', 'Job posting saved.')
+      if (result && !input.id) await publishBroadcastNotification('New job posted', `${input.title.trim()} at ${input.company.trim()} · ${input.place.trim()} · ${input.salary.trim()}`)
+      return result
+    },
+
+    async setJobOpen(id, open) {
+      if (!hasPermission(sessionRef.current?.role, 'jobs.manage')) {
+        pushToast('You do not have permission to manage job openings.', 'error')
+        return null
+      }
+      try {
+        if (isSupabaseConfigured()) await setJobOpenInSupabase(id, open)
+      } catch (error) {
+        pushToast(error.message || 'Could not update the job opening.', 'error')
+        return null
+      }
+      return commit('jobs.manage', (draft) => {
+        const job = draft.jobs.find((item) => item.id === id)
+        if (!job) throw new Error('Job opening not found.')
+        job.open = open
+      }, open ? 'Reopened a job posting' : 'Closed a job posting', open ? 'Job opening is live.' : 'Job opening closed.')
+    },
+
+    async deleteJob(id) {
+      if (!hasPermission(sessionRef.current?.role, 'jobs.manage')) {
+        pushToast('You do not have permission to delete job openings.', 'error')
+        return null
+      }
+      try {
+        if (isSupabaseConfigured()) await deleteJobFromSupabase(id)
+      } catch (error) {
+        pushToast(error.message || 'Could not delete the job opening.', 'error')
+        return null
+      }
+      return commit('jobs.manage', (draft) => {
+        draft.jobs = draft.jobs.filter((item) => item.id !== id)
+      }, 'Deleted a job posting', 'Job opening deleted.')
     },
 
     saveInventory(input) {

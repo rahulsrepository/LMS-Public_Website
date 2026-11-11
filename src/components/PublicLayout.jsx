@@ -61,7 +61,7 @@ export function PublicLayout({ children }) {
       <header className="sticky top-0 z-40 nav-blur border-b border-line">
         <div className="mx-auto flex max-w-6xl items-center gap-4 px-4 py-3">
           <Link to="/" className="flex items-center gap-3">
-            <Logo className="h-12 w-12" />
+            <Logo className="h-14 w-14" />
             <span>
               <span className="block font-display text-sm leading-tight sm:text-base">{state.settings?.name || INSTITUTE.name}</span>
               <span className="block text-[11px] text-muted">{INSTITUTE.tagline}</span>

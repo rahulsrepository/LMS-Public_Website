@@ -44,6 +44,7 @@ export function createSeed() {
     feeRecords: [],
     payments: [],
     notifications: [],
+    notificationReads: {},
     sessions: [],
     logs: [],
     facultyAttendance: [],

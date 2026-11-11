@@ -17,7 +17,7 @@ import CourseDetailPage from './pages/public/CourseDetail'
 import CoursesPagePublic from './pages/public/Courses'
 import HomePage from './pages/public/Home'
 import { CareersPage, ContactPage, EnrollPage, FaqPage, PlacementsPage, WhyPage, WorkshopsPage } from './pages/public/SimplePages'
-import { StudentAssignments, StudentAttendance, StudentExams, StudentFees, StudentHome, StudentMaterials, StudentNotes } from './pages/learn/StudentPortal'
+import { StudentAssignments, StudentAttendance, StudentBookmarks, StudentCompanyQuestions, StudentCourses, StudentExams, StudentFees, StudentHome, StudentJobs, StudentMaterials, StudentNotes, StudentProfilePage, StudentWorkshops } from './pages/learn/StudentPortal'
 
 function StaffShell() {
   const { session } = useLms()
@@ -42,6 +42,7 @@ function StaffArea() {
         <Route path="my-students" element={<Allow anyOf={['students.assigned']}><StudentsPage /></Allow>} />
         <Route path="register" element={<Allow anyOf={['students.write', 'students.register']}><RegisterPage /></Allow>} />
         <Route path="faculty" element={<Allow anyOf={['faculty.manage']}><FacultyPage /></Allow>} />
+        <Route path="admins" element={<AdminOnly><StaffPage role="admin" title="Admin management" /></AdminOnly>} />
         <Route path="receptionists" element={<Allow anyOf={['staff.manage']}><StaffPage role="receptionist" title="Receptionist management" /></Allow>} />
         <Route path="counsellors" element={<Allow anyOf={['staff.manage']}><StaffPage role="counsellor" title="Counsellor management" /></Allow>} />
         <Route path="accountants" element={<Allow anyOf={['staff.manage']}><StaffPage role="accountant" title="Accountant management" /></Allow>} />
@@ -71,7 +72,8 @@ function StaffArea() {
         <Route path="discounts" element={<Allow anyOf={['fees.manage', 'fees.request']}><ApprovalsDesk kind="discount" /></Allow>} />
         <Route path="referrals" element={<Allow anyOf={['fees.manage', 'fees.request']}><ReferralDesk /></Allow>} />
         <Route path="workshops" element={<Allow anyOf={['workshops.manage']}><WorkshopsDesk /></Allow>} />
-        <Route path="careers" element={<Allow anyOf={['careers.manage']}><CareersDesk /></Allow>} />
+        <Route path="jobs" element={<Allow anyOf={['jobs.manage', 'jobs.view']}><CareersDesk /></Allow>} />
+        <Route path="careers" element={<Allow anyOf={['jobs.manage']}><CareersDesk /></Allow>} />
         <Route path="inventory" element={<Allow anyOf={['inventory.manage']}><InventoryDesk /></Allow>} />
         <Route path="tickets" element={<Allow anyOf={['tickets.manage']}><TicketsDesk /></Allow>} />
         <Route path="profile" element={<ProfilePage />} />
@@ -96,13 +98,18 @@ function StudentArea() {
     <Routes>
       <Route element={<StudentShell />}>
         <Route index element={<StudentHome />} />
+        <Route path="courses" element={<StudentCourses />} />
         <Route path="materials" element={<StudentMaterials />} />
         <Route path="assignments" element={<StudentAssignments />} />
         <Route path="exams" element={<StudentExams />} />
+        <Route path="company-questions" element={<StudentCompanyQuestions />} />
+        <Route path="jobs" element={<StudentJobs />} />
+        <Route path="workshops" element={<StudentWorkshops />} />
+        <Route path="bookmarks" element={<StudentBookmarks />} />
         <Route path="attendance" element={<StudentAttendance />} />
         <Route path="fees" element={<StudentFees />} />
         <Route path="notifications" element={<StudentNotes />} />
-        <Route path="profile" element={<ProfilePage />} />
+        <Route path="profile" element={<StudentProfilePage />} />
         <Route path="*" element={<AccessDenied />} />
       </Route>
     </Routes>
@@ -112,6 +119,12 @@ function StudentArea() {
 function Allow({ anyOf, children }) {
   const { session } = useLms()
   if (!hasAnyPermission(session?.role, anyOf)) return <AccessDenied />
+  return children
+}
+
+function AdminOnly({ children }) {
+  const { session } = useLms()
+  if (session?.role !== 'admin') return <AccessDenied />
   return children
 }
 

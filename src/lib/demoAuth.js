@@ -54,6 +54,14 @@ export function registerDemo(email, password, profileId) {
   localStorage.setItem(KEY, JSON.stringify(users))
 }
 
+export function updateDemoEmail(profileId, email) {
+  const users = read() || []
+  const row = users.find((user) => user.profileId === profileId)
+  if (!row) return
+  row.email = email.trim().toLowerCase()
+  localStorage.setItem(KEY, JSON.stringify(users))
+}
+
 export function updateDemoPassword(email, currentPassword, nextPassword) {
   const match = verifyDemo(email, currentPassword)
   if (!match) throw new Error('Existing password is not correct.')
@@ -70,7 +78,6 @@ export function resetDemoAuth() {
 }
 
 export function validatePassword(password) {
-  if (!password || password.length < 8) return 'Password must be at least 8 characters.'
-  if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) return 'Use at least one letter and one number.'
+  if (!password || password.length < 6) return 'Password must be at least 6 characters.'
   return ''
 }

@@ -33,6 +33,7 @@ import {
   Banknote,
   BadgePercent,
   UserCog,
+  Bookmark,
 } from 'lucide-react'
 
 /** Permission keys shared by the UI, the local data layer, and supabase/schema.sql */
@@ -47,6 +48,7 @@ export const ROLE_PERMISSIONS = {
     'faculty.manage',
     'staff.manage',
     'courses.view',
+    'batches.delete',
     'batches.view',
     'subjects.view',
     'attendance.view',
@@ -57,13 +59,13 @@ export const ROLE_PERMISSIONS = {
     'fees.request',
     'fees.cash',
     'workshops.manage',
-    'careers.manage',
     'inventory.manage',
     'tickets.manage',
     'notifications',
   ],
   faculty: [
     'dashboard',
+    'jobs.view',
     'students.assigned',
     'subjects.assigned',
     'batches.assigned',
@@ -82,11 +84,11 @@ export const ROLE_PERMISSIONS = {
     'students.register',
     'courses.view',
     'subjects.view',
+    'batches.delete',
     'batches.view',
     'fees.view',
     'reports.enquiry',
     'workshops.manage',
-    'careers.manage',
     'tickets.manage',
     'notifications',
   ],
@@ -126,6 +128,7 @@ export const NAV = {
       children: [
         { to: '/app/students', label: 'Students', icon: Users, permission: 'students.view' },
         { to: '/app/faculty', label: 'Faculty', icon: GraduationCap, permission: 'faculty.manage' },
+        { to: '/app/admins', label: 'Admins', icon: UserCog, permission: 'staff.manage' },
         { to: '/app/receptionists', label: 'Receptionist', icon: UserPlus, permission: 'staff.manage' },
         { to: '/app/counsellors', label: 'Counsellor', icon: MessagesSquare, permission: 'staff.manage' },
         { to: '/app/accountants', label: 'Accountant', icon: Briefcase, permission: 'staff.manage' },
@@ -138,7 +141,8 @@ export const NAV = {
         { to: '/app/courses', label: 'Courses', icon: BookOpen, permission: 'courses.manage' },
         { to: '/app/subjects', label: 'Subjects', icon: Library, permission: 'subjects.manage' },
         { to: '/app/batches', label: 'Batches', icon: Layers, permission: 'batches.manage' },
-        { to: '/app/faculty-attendance', label: 'Attendance', icon: CalendarCheck, permission: 'attendance.faculty' },
+        { to: '/app/attendance', label: 'Student Attendance', icon: CalendarCheck, permission: 'attendance.view' },
+        { to: '/app/faculty-attendance', label: 'Staff Attendance', icon: CalendarCheck, permission: 'attendance.faculty' },
         { to: '/app/exams', label: 'Examinations', icon: FileQuestion, permission: 'exams.manage' },
       ],
     },
@@ -159,7 +163,7 @@ export const NAV = {
       children: [
         { to: '/app/enquiries', label: 'Enquiries', icon: Inbox, permission: 'enquiries.full' },
         { to: '/app/workshops', label: 'Workshops', icon: Presentation, permission: 'workshops.manage' },
-        { to: '/app/careers', label: 'Careers', icon: Briefcase, permission: 'careers.manage' },
+        { to: '/app/jobs', label: 'Job postings', icon: Briefcase, permission: 'jobs.manage' },
         { to: '/app/inventory', label: 'Inventory', icon: Package, permission: 'inventory.manage' },
         { to: '/app/tickets', label: 'Support Tickets', icon: LifeBuoy, permission: 'tickets.manage' },
       ],
@@ -202,7 +206,8 @@ export const NAV = {
         { to: '/app/courses', label: 'Courses', icon: BookOpen, permission: 'courses.view' },
         { to: '/app/subjects', label: 'Subjects', icon: Library, permission: 'subjects.view' },
         { to: '/app/batches', label: 'Batches', icon: Layers, permission: 'batches.view' },
-        { to: '/app/faculty-attendance', label: 'Attendance', icon: CalendarCheck, permission: 'attendance.faculty' },
+        { to: '/app/attendance', label: 'Student Attendance', icon: CalendarCheck, permission: 'attendance.view' },
+        { to: '/app/faculty-attendance', label: 'Staff Attendance', icon: CalendarCheck, permission: 'attendance.faculty' },
       ],
     },
     {
@@ -222,7 +227,6 @@ export const NAV = {
       children: [
         { to: '/app/enquiries', label: 'Enquiries', icon: Inbox, permission: 'enquiries.limited' },
         { to: '/app/workshops', label: 'Workshops', icon: Presentation, permission: 'workshops.manage' },
-        { to: '/app/careers', label: 'Careers', icon: Briefcase, permission: 'careers.manage' },
         { to: '/app/inventory', label: 'Inventory', icon: Package, permission: 'inventory.manage' },
         { to: '/app/tickets', label: 'Support Tickets', icon: LifeBuoy, permission: 'tickets.manage' },
       ],
@@ -231,6 +235,7 @@ export const NAV = {
   ],
   faculty: [
     { to: '/app', label: 'Dashboard', icon: LayoutDashboard, end: true },
+    { to: '/app/jobs', label: 'Jobs', icon: Briefcase, permission: 'jobs.view' },
     { to: '/app/my-subjects', label: 'My Subjects', icon: Library, permission: 'subjects.assigned' },
     { to: '/app/my-batches', label: 'My Batches', icon: Layers, permission: 'batches.assigned' },
     { to: '/app/my-students', label: 'My Students', icon: Users, permission: 'students.assigned' },
@@ -267,7 +272,6 @@ export const NAV = {
       icon: FolderOpen,
       children: [
         { to: '/app/workshops', label: 'Workshops', icon: Presentation, permission: 'workshops.manage' },
-        { to: '/app/careers', label: 'Careers', icon: Briefcase, permission: 'careers.manage' },
         { to: '/app/tickets', label: 'Support Tickets', icon: LifeBuoy, permission: 'tickets.manage' },
       ],
     },
@@ -294,13 +298,18 @@ export const NAV = {
 
 export const STUDENT_NAV = [
   { to: '/learn', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/learn/materials', label: 'Study Materials', icon: Presentation },
+  { to: '/learn/courses', label: 'Courses', icon: BookOpen },
+  { to: '/learn/exams', label: 'Tests', icon: FileQuestion },
   { to: '/learn/assignments', label: 'Assignments', icon: ClipboardList },
-  { to: '/learn/exams', label: 'Examinations', icon: FileQuestion },
+  { to: '/learn/company-questions', label: 'Company Questions', icon: Code },
+  { to: '/learn/jobs', label: 'Jobs', icon: Briefcase },
+  { to: '/learn/workshops', label: 'Workshops', icon: Presentation },
+  { to: '/learn/bookmarks', label: 'Bookmarks', icon: Bookmark },
+  { to: '/learn/materials', label: 'Study Materials', icon: Presentation },
   { to: '/learn/attendance', label: 'Attendance', icon: CalendarCheck },
   { to: '/learn/fees', label: 'Fees', icon: Wallet },
   { to: '/learn/notifications', label: 'Notifications', icon: Bell },
-  { to: '/learn/profile', label: 'Profile Settings', icon: UserCog },
+  { to: '/learn/profile', label: 'Profile', icon: UserRound },
 ]
 
 function visible(role, item) {

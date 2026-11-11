@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Badge, Button, Empty, Field, Modal, PageTitle, Select, TextArea, TextInput, statusTone } from '../../components/ui'
+import { Badge, Button, DateInput, Empty, Field, Modal, PageTitle, Select, TextArea, TextInput, statusTone } from '../../components/ui'
 import { ENQUIRY_STATUSES, inr, statusLabel, todayISO } from '../../lib/format'
 import { useLookups } from './lookups'
 import { useTitle } from '../useTitle'
@@ -52,9 +52,20 @@ export function EnquiriesPage({ createOnly = false }) {
 }
 
 function EnquiryForm({ lms, form, setForm, editing, onDone }) {
+  const alreadyEnrolled = editing && lms.state.admissions.some((item) => item.enquiryId === editing.id && item.status === 'enrolled')
+  const needsEnrollment = form.status === 'converted' && editing && !alreadyEnrolled
+  const availableBatches = lms.state.batches.filter((batch) => (
+    ['running', 'waiting'].includes(batch.status)
+    && (!form.courseId || batch.courseId === form.courseId)
+  ))
   return (
     <form className="grid gap-3 sm:grid-cols-2" onSubmit={(event) => {
       event.preventDefault()
+      if (needsEnrollment) {
+        const ok = lms.enrollEnquiry(editing.id, { courseId: form.courseId, batchId: form.batchId, enquiry: form })
+        if (ok) onDone()
+        return
+      }
       const ok = lms.saveEnquiry(editing ? { ...form, id: editing.id } : form)
       if (ok) onDone()
     }}>
@@ -71,11 +82,25 @@ function EnquiryForm({ lms, form, setForm, editing, onDone }) {
         </Select>
       </Field>
       <Field label="Status">
-        <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
-          {ENQUIRY_STATUSES.map((status) => <option key={status.id} value={status.id}>{status.label}</option>)}
+        <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value, batchId: '' })}>
+          {ENQUIRY_STATUSES.filter((status) => editing || status.id !== 'converted').map((status) => <option key={status.id} value={status.id}>{status.label}</option>)}
         </Select>
       </Field>
-      <Field label="Follow-up date"><TextInput type="date" value={form.followUpDate || ''} onChange={(e) => setForm({ ...form, followUpDate: e.target.value })} /></Field>
+      {needsEnrollment ? (
+        <div className="sm:col-span-2">
+          <p className="mb-2 text-sm font-semibold">Choose a running or waiting batch to complete this conversion.</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {availableBatches.map((batch) => (
+              <button key={batch.id} type="button" onClick={() => setForm({ ...form, courseId: batch.courseId, batchId: batch.id })} className={`rounded-2xl border p-3 text-left ${form.batchId === batch.id ? 'border-brand-500 bg-brand-50' : 'border-line bg-white'}`}>
+                <span className="block font-semibold">{batch.name}</span>
+                <span className="text-xs text-muted">{lms.courseName(batch.courseId)} · {batch.status}</span>
+              </button>
+            ))}
+            {!availableBatches.length ? <p className="text-sm text-muted">No running or waiting batches are available for this course.</p> : null}
+          </div>
+        </div>
+      ) : null}
+      <Field label="Follow-up date"><DateInput value={form.followUpDate || ''} onChange={(e) => setForm({ ...form, followUpDate: e.target.value })} /></Field>
       <Field label="Remarks"><TextInput value={form.remarks || ''} onChange={(e) => setForm({ ...form, remarks: e.target.value })} /></Field>
       <div className="sm:col-span-2"><Field label="History note"><TextArea value={form.note || ''} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field></div>
       {editing?.history?.length ? (
@@ -83,7 +108,7 @@ function EnquiryForm({ lms, form, setForm, editing, onDone }) {
           {editing.history.map((item, index) => <p key={index} className="py-1"><span className="font-semibold">{item.by}:</span> {item.note}</p>)}
         </div>
       ) : null}
-      <div className="sm:col-span-2"><Button type="submit">Save enquiry</Button></div>
+      <div className="sm:col-span-2"><Button type="submit" disabled={needsEnrollment && !form.batchId}>{needsEnrollment ? 'Convert and enroll' : 'Save enquiry'}</Button></div>
     </form>
   )
 }
@@ -121,7 +146,7 @@ function FollowCard({ enquiry, lms, urgent }) {
       <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_180px_160px_auto]">
         <TextInput placeholder="Call remark" value={note} onChange={(e) => setNote(e.target.value)} />
         <Select value={status} onChange={(e) => setStatus(e.target.value)}>{ENQUIRY_STATUSES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</Select>
-        <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        <DateInput value={date} onChange={(e) => setDate(e.target.value)} />
         <Button onClick={() => lms.saveEnquiry({ ...enquiry, status, followUpDate: date, note })}>Save</Button>
       </div>
     </article>
@@ -142,7 +167,7 @@ export function SessionsPage() {
             {lms.enquiries().filter((item) => item.status !== 'converted').map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
           </Select>
         </Field>
-        <Field label="Date"><TextInput type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
+        <Field label="Date"><DateInput value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
         <Field label="Time"><TextInput type="time" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} /></Field>
         <Field label="Mode">
           <Select value={form.mode} onChange={(e) => setForm({ ...form, mode: e.target.value })}><option>Campus</option><option>Phone</option></Select>

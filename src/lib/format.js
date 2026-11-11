@@ -37,6 +37,15 @@ export function uid(prefix = 'id') {
   return `${prefix}-${Math.random().toString(36).slice(2, 8)}${Date.now().toString(36).slice(-4)}`
 }
 
+export function safeExternalUrl(value) {
+  try {
+    const url = new URL(value)
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : ''
+  } catch {
+    return ''
+  }
+}
+
 export function downloadCsv(filename, rows) {
   const csv = rows
     .map((row) =>

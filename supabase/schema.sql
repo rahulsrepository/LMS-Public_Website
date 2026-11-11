@@ -5,7 +5,8 @@
 -- After it finishes:
 -- 1. Create the first admin in Authentication → Users.
 -- 2. Insert a matching profiles row (see the bottom of this file).
--- 3. Deploy supabase/functions/create-staff so receptionist/admin can open faculty logins.
+-- 3. Deploy supabase/functions/create-staff so admin/receptionist can manage people
+--    and counsellors can register students.
 -- 4. Put VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env
 
 create extension if not exists pgcrypto;
@@ -61,6 +62,8 @@ create table if not exists public.profiles (
   full_name text not null,
   email text not null unique,
   phone text default '',
+  experience text not null default '',
+  avatar_url text not null default '',
   role text not null check (role in ('admin', 'receptionist', 'faculty', 'counsellor', 'accountant', 'student')),
   is_active boolean not null default true,
   created_at timestamptz not null default now(),
@@ -110,6 +113,7 @@ insert into public.permissions (key, description) values
   ('subjects.view', 'View subjects'),
   ('subjects.assigned', 'View assigned subjects'),
   ('batches.manage', 'Manage batches'),
+  ('batches.delete', 'Delete batches without students or active admissions'),
   ('batches.view', 'View batches'),
   ('batches.assigned', 'View assigned batches'),
   ('attendance.view', 'View attendance'),
@@ -129,6 +133,8 @@ insert into public.permissions (key, description) values
   ('reports.academic', 'Academic performance reports'),
   ('reports.enquiry', 'Enquiry reports'),
   ('reports.institute', 'Institute-wide reports'),
+  ('jobs.manage', 'Publish and manage job postings'),
+  ('jobs.view', 'View job postings'),
   ('notifications', 'Read notifications'),
   ('notifications.manage', 'Publish notifications'),
   ('logs', 'Read activity logs'),
@@ -141,17 +147,17 @@ on conflict do nothing;
 
 insert into public.role_permissions (role, permission_id)
 select 'receptionist', id from public.permissions
-where key in ('faculty.manage', 'students.view', 'students.write', 'courses.view', 'subjects.view', 'batches.view', 'attendance.view', 'enquiries.limited', 'admissions.assist', 'fees.view', 'notifications')
+where key in ('faculty.manage', 'students.view', 'students.write', 'courses.view', 'subjects.view', 'batches.view', 'batches.delete', 'attendance.view', 'enquiries.limited', 'admissions.assist', 'fees.view', 'notifications')
 on conflict do nothing;
 
 insert into public.role_permissions (role, permission_id)
 select 'faculty', id from public.permissions
-where key in ('students.assigned', 'subjects.assigned', 'batches.assigned', 'attendance.mark', 'materials.manage', 'exams.manage', 'assignments.manage', 'results.manage', 'reports.academic', 'notifications')
+where key in ('jobs.view', 'students.assigned', 'subjects.assigned', 'batches.assigned', 'attendance.mark', 'materials.manage', 'exams.manage', 'assignments.manage', 'results.manage', 'reports.academic', 'notifications')
 on conflict do nothing;
 
 insert into public.role_permissions (role, permission_id)
 select 'counsellor', id from public.permissions
-where key in ('enquiries.full', 'admissions.manage', 'students.register', 'courses.view', 'batches.view', 'fees.view', 'reports.enquiry', 'notifications')
+where key in ('enquiries.full', 'admissions.manage', 'students.register', 'courses.view', 'batches.view', 'batches.delete', 'fees.view', 'reports.enquiry', 'notifications')
 on conflict do nothing;
 
 insert into public.role_permissions (role, permission_id)
@@ -166,6 +172,9 @@ security definer
 set search_path = public
 as $$
 begin
+  if auth.role() = 'service_role' then
+    return new;
+  end if;
   if tg_op = 'UPDATE' then
     if new.role is distinct from old.role and not public.has_permission('staff.manage') then
       raise exception 'Only an admin can change a role';
@@ -250,8 +259,13 @@ create table if not exists public.accountants (
 create table if not exists public.job_openings (
   id uuid primary key default gen_random_uuid(),
   title text not null,
+  company_name text not null default '',
   job_type text default 'Full-time',
+  industry text not null default 'IT',
+  skills text not null default '',
   place text default 'Campus',
+  salary text not null default '',
+  apply_url text not null default '',
   blurb text default '',
   is_open boolean not null default true,
   created_at timestamptz not null default now()
@@ -346,6 +360,27 @@ create table if not exists public.admissions (
   counsellor_id uuid references public.profiles (id),
   created_at timestamptz not null default now()
 );
+
+create or replace function public.prevent_batch_delete_with_students_or_admissions()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if exists (select 1 from public.students where batch_id = old.id) then
+    raise exception 'Move or remove the students in this batch before deleting it.';
+  end if;
+  if exists (select 1 from public.admissions where batch_id = old.id) then
+    raise exception 'Resolve the admissions linked to this batch before deleting it.';
+  end if;
+  return old;
+end;
+$$;
+
+drop trigger if exists batches_delete_guard on public.batches;
+create trigger batches_delete_guard before delete on public.batches
+for each row execute function public.prevent_batch_delete_with_students_or_admissions();
 
 create table if not exists public.counselling_sessions (
   id uuid primary key default gen_random_uuid(),
@@ -675,11 +710,14 @@ using (
 create policy batches_write on public.batches for all to authenticated
 using (public.has_permission('batches.manage'))
 with check (public.has_permission('batches.manage'));
+drop policy if exists batches_delete on public.batches;
+create policy batches_delete on public.batches for delete to authenticated
+using (public.has_permission('batches.manage') or public.has_permission('batches.delete'));
 
 create policy job_openings_read on public.job_openings for select to anon, authenticated using (true);
 create policy job_openings_write on public.job_openings for all to authenticated
-using (public.has_permission('careers.manage'))
-with check (public.has_permission('careers.manage'));
+using (public.has_permission('jobs.manage'))
+with check (public.has_permission('jobs.manage'));
 
 create policy workshops_read on public.workshops for select to anon, authenticated using (true);
 create policy workshops_write on public.workshops for all to authenticated
@@ -893,8 +931,16 @@ using (
   or (audience = 'students' and public.jwt_role() = 'student')
 );
 create policy notifications_write on public.notifications for all to authenticated
-using (public.has_permission('notifications.manage'))
-with check (public.has_permission('notifications.manage'));
+using (
+  public.has_permission('notifications.manage')
+  or public.has_permission('jobs.manage')
+  or public.has_permission('workshops.manage')
+)
+with check (
+  public.has_permission('notifications.manage')
+  or public.has_permission('jobs.manage')
+  or public.has_permission('workshops.manage')
+);
 
 create policy logs_read on public.activity_logs for select to authenticated
 using (public.has_permission('logs'));

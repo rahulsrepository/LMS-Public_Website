@@ -1,6 +1,5 @@
 import { Link, useParams } from 'react-router-dom'
 import { PublicLayout, PageHero } from '../../components/PublicLayout'
-import { inr } from '../../lib/format'
 import { useLms } from '../../lib/store'
 import { useTitle } from '../useTitle'
 
@@ -40,9 +39,7 @@ export default function CourseDetailPage() {
           </article>
         </div>
         <aside className="h-fit rounded-[28px] bg-brand-800 p-6 text-white">
-          <p className="text-sm text-white/70">Course fee</p>
-          <p className="font-display text-4xl">{inr(course.fee)}</p>
-          <p className="mt-2 text-sm text-white/80">{course.duration} · {course.mode}</p>
+          <p className="text-sm text-white/80">{course.mode}</p>
           <p className="mt-4 text-sm text-white/80">{batches.length ? `${batches.length} batch${batches.length > 1 ? 'es' : ''} currently listed` : 'Next batch dates are shared at counselling.'}</p>
           <Link to={`/enroll?course=${course.id}`} className="mt-6 block rounded-full bg-gold-400 px-4 py-3 text-center text-sm font-semibold text-brand-950">Enroll Now</Link>
           <Link to="/contact" className="mt-3 block text-center text-sm font-semibold text-white">Ask a counsellor</Link>

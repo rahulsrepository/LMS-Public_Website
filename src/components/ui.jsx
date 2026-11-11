@@ -1,5 +1,5 @@
-import { useEffect } from 'react'
-import { X } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { CalendarDays, Eye, EyeOff, X } from 'lucide-react'
 import { cx } from '../lib/format'
 import { useLms } from '../lib/store'
 
@@ -33,6 +33,33 @@ const control = 'w-full rounded-2xl border border-line bg-white px-3.5 py-2.5 te
 
 export function TextInput({ className, ...props }) {
   return <input className={cx(control, className)} {...props} />
+}
+
+export function DateInput({ className, ...props }) {
+  return (
+    <span className="relative block">
+      <input type="date" className={cx(control, 'pr-10', className)} {...props} />
+      <CalendarDays size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted" />
+    </span>
+  )
+}
+
+export function PasswordInput({ className, ...props }) {
+  const [visible, setVisible] = useState(false)
+  return (
+    <div className="relative w-full">
+      <input type={visible ? 'text' : 'password'} className={cx(control, 'pr-11', className)} {...props} />
+      <button
+        type="button"
+        className="absolute inset-y-0 right-0 inline-flex w-10 items-center justify-center text-muted hover:text-ink"
+        onClick={() => setVisible((value) => !value)}
+        aria-label={visible ? 'Hide password' : 'Show password'}
+        aria-pressed={visible}
+      >
+        {visible ? <EyeOff size={17} /> : <Eye size={17} />}
+      </button>
+    </div>
+  )
 }
 export function Select({ className, ...props }) {
   return <select className={cx(control, className)} {...props} />

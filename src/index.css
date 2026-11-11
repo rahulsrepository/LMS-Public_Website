@@ -63,9 +63,16 @@ body {
   background: #fff;
 }
 
+#root, main, .app-grid { min-width: 0; }
+input, select, textarea { max-width: 100%; }
+textarea { width: 100%; }
+
 h1, h2, h3, h4, .font-display { font-family: var(--font-display); }
 
 button, input, select, textarea { font-family: inherit; }
+button:not(:disabled), a[href], [role="button"], summary, select,
+input[type="checkbox"], input[type="radio"] { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
 
 ::selection { background: #cfeedd; }
 
@@ -107,6 +114,12 @@ button, input, select, textarea { font-family: inherit; }
 
 .scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
 .scrollbar-thin::-webkit-scrollbar-thumb { background: #c9ddd0; border-radius: 99px; }
+
+@media (max-width: 640px) {
+  body { overflow-x: hidden; }
+  .app-grid { background-size: 28px 28px; }
+  .overflow-x-auto { max-width: 100%; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }

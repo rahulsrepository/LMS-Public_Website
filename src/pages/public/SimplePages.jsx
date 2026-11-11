@@ -6,6 +6,33 @@ import { contactLinks, FAQS, PARTNERS, TESTIMONIALS, WHY_POINTS } from '../../li
 import { useLms } from '../../lib/store'
 import { useTitle } from '../useTitle'
 
+const PARTNER_LOGOS = {
+  TCS: { slug: 'tcs', color: '5F259F' },
+  Infosys: { slug: 'infosys', color: '007CC3' },
+  Wipro: { slug: 'wipro', color: '341C80' },
+  Accenture: { slug: 'accenture', color: 'A100FF' },
+  Cognizant: { slug: 'cognizant', color: '1A7F96' },
+  Capgemini: { slug: 'capgemini', color: '0070AD' },
+  HCL: { slug: 'hcl', color: '0072C6' },
+  'Tech Mahindra': { slug: 'techmahindra', color: 'E31837' },
+}
+
+function PartnerCard({ name }) {
+  const [logoFailed, setLogoFailed] = useState(false)
+  const mark = name === 'Tech Mahindra' ? 'TM' : name.slice(0, 1)
+  const brand = PARTNER_LOGOS[name]
+  return (
+    <div className="flex items-center gap-3 rounded-2xl border border-line bg-white px-4 py-3">
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white">
+        {logoFailed
+          ? <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-700 text-sm font-black text-white">{mark}</span>
+          : <img src={`https://cdn.simpleicons.org/${brand.slug}/${brand.color}`} alt={`${name} logo`} className="max-h-8 max-w-9 object-contain" onError={() => setLogoFailed(true)} />}
+      </span>
+      <span className="text-sm font-bold text-slate-700">{name}</span>
+    </div>
+  )
+}
+
 export function WhyPage() {
   useTitle('Why Choose Us')
   return (
@@ -42,8 +69,8 @@ export function PlacementsPage() {
           ))}
         </div>
         <h2 className="mt-10 font-display text-2xl">Companies our students prepare for</h2>
-        <div className="mt-4 flex flex-wrap gap-3">
-          {PARTNERS.map((name) => <span key={name} className="rounded-2xl border border-line px-4 py-3 text-sm font-bold text-slate-600">{name}</span>)}
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          {PARTNERS.map((name) => <PartnerCard key={name} name={name} />)}
         </div>
         <div className="mt-8 grid gap-4 md:grid-cols-3">
           {TESTIMONIALS.map((story) => (
@@ -96,7 +123,7 @@ export function WorkshopsPage() {
 
 export function CareersPage() {
   const { submitPublicEnquiry, state } = useLms()
-  const jobs = (state.jobs || []).filter((job) => job.open !== false)
+  const jobs = (state.jobs || []).filter((job) => job.open !== false && !job.studentOnly)
   const [form, setForm] = useState({ name: '', phone: '', email: '', role: jobs[0]?.title || '', note: '' })
   useTitle('Careers')
   return (
@@ -106,7 +133,7 @@ export function CareersPage() {
         <div className="space-y-3">
           {jobs.map((job) => (
             <article key={job.id} className="rounded-[28px] border border-line p-5">
-              <p className="text-xs font-semibold text-brand-700">{job.type} · {job.place}</p>
+              <p className="text-xs font-semibold text-brand-700">{job.type} · {job.industry || 'IT'} · {job.place}</p>
               <h2 className="mt-1 font-display text-2xl">{job.title}</h2>
               <p className="mt-2 text-sm text-muted">{job.blurb}</p>
             </article>

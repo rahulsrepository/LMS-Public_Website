@@ -1,5 +1,7 @@
 import { useState } from 'react'
-import { Badge, Button, Empty, Field, Modal, PageTitle, Select, TextArea, TextInput, statusTone } from '../../components/ui'
+import { Link } from 'react-router-dom'
+import { Trash2 } from 'lucide-react'
+import { Badge, Button, DateInput, Empty, Field, Modal, PageTitle, Select, TextArea, TextInput, statusTone } from '../../components/ui'
 import { inr, todayISO } from '../../lib/format'
 import { useLookups } from './lookups'
 import { useTitle } from '../useTitle'
@@ -22,7 +24,12 @@ export function CoursesPage() {
             </div>
             <p className="mt-2 text-sm text-muted">{course.summary}</p>
             <p className="mt-3 text-sm font-semibold">{course.duration} · {course.level}</p>
-            {manage ? <button className="mt-3 text-sm font-semibold text-brand-700" onClick={() => { setForm({ id: course.id, name: course.name, fee: course.fee, duration: course.duration, level: course.level, summary: course.summary }); setOpen(true) }}>Edit</button> : null}
+            {manage ? <div className="mt-3 flex flex-wrap gap-4">
+              <button className="text-sm font-semibold text-brand-700" onClick={() => { setForm({ id: course.id, name: course.name, fee: course.fee, duration: course.duration, level: course.level, summary: course.summary }); setOpen(true) }}>Edit</button>
+              <button className="text-sm font-semibold text-rose-700" onClick={() => {
+                if (window.confirm(`Delete "${course.name}"? Courses linked to batches or students cannot be deleted.`)) lms.deleteCourse(course.id)
+              }}>Delete course</button>
+            </div> : null}
           </article>
         ))}
       </div>
@@ -91,7 +98,9 @@ export function BatchesPage({ mine = false }) {
   const lms = useLookups()
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState(emptyBatch)
+  const [expandedBatchId, setExpandedBatchId] = useState(null)
   const manage = lms.can('batches.manage')
+  const canDelete = lms.can('batches.delete')
   const rows = mine ? lms.batches() : (lms.session.role === 'faculty' ? lms.batches() : lms.state.batches)
   useTitle(mine ? 'My batches' : 'Batches')
 
@@ -110,12 +119,19 @@ export function BatchesPage({ mine = false }) {
     setOpen(true)
   }
 
+  async function deleteBatch(batch) {
+    const confirmed = window.confirm(`Delete "${batch.name}"? Its materials, tests, assignments, and attendance will also be deleted. Batches with students or admissions cannot be deleted.`)
+    if (!confirmed) return
+    await lms.deleteBatch(batch.id)
+  }
+
   return (
     <div>
       <PageTitle eyebrow="Academics" title={mine ? 'My batches' : manage ? 'Batch management' : 'Batch information'} text="Schedules, seats and the faculty member responsible for the lab." action={manage ? <Button onClick={() => openBatch(null)}>Add batch</Button> : null} />
       <div className="grid gap-4 md:grid-cols-2">
         {rows.map((batch) => {
           const count = lms.state.students.filter((student) => student.batchId === batch.id && student.status !== 'inactive').length
+          const enrolled = lms.state.students.filter((student) => student.batchId === batch.id && student.status === 'active')
           const faculty = lms.state.faculty.find((item) => item.id === batch.facultyId)
           return (
             <article key={batch.id} className="rounded-3xl bg-white p-5 soft-shadow">
@@ -127,7 +143,26 @@ export function BatchesPage({ mine = false }) {
               <p className="mt-1 text-sm">{batch.schedule}</p>
               <p className="mt-2 text-sm">Faculty: {faculty ? lms.profileName(faculty.userId) : 'Unassigned'}</p>
               <p className="text-sm text-muted">{count} / {batch.seats} seats</p>
-              {manage ? <button className="mt-3 text-sm font-semibold text-brand-700" onClick={() => openBatch(batch)}>Edit</button> : null}
+              <button type="button" className="mt-3 text-sm font-semibold text-brand-700" onClick={() => setExpandedBatchId(expandedBatchId === batch.id ? null : batch.id)} aria-expanded={expandedBatchId === batch.id}>
+                {expandedBatchId === batch.id ? 'Hide' : 'View'} enrolled students ({enrolled.length})
+              </button>
+              {expandedBatchId === batch.id ? (
+                <ul className="mt-3 space-y-2 border-t border-line pt-3">
+                  {enrolled.map((student) => (
+                    <li key={student.id} className="flex flex-wrap justify-between gap-2 text-sm">
+                      <span className="font-semibold">{student.name}</span>
+                      <span className="text-muted">{student.rollNo} · {student.email || student.phone || '—'}</span>
+                    </li>
+                  ))}
+                  {!enrolled.length ? <li className="text-sm text-muted">No enrolled students in this batch.</li> : null}
+                </ul>
+              ) : null}
+              {manage || canDelete ? (
+                <div className="mt-3 flex gap-4">
+                  {manage ? <button className="text-sm font-semibold text-brand-700" onClick={() => openBatch(batch)}>Edit</button> : null}
+                  {canDelete ? <button className="inline-flex items-center gap-1 text-sm font-semibold text-rose-700" onClick={() => deleteBatch(batch)}><Trash2 size={15} /> Delete batch</button> : null}
+                </div>
+              ) : null}
             </article>
           )
         })}
@@ -168,25 +203,57 @@ export function AttendancePage() {
   const lms = useLookups()
   const batches = lms.session.role === 'faculty' ? lms.batches() : lms.state.batches
   const [batchId, setBatchId] = useState(batches[0]?.id || '')
+  const [showStudents, setShowStudents] = useState(!['admin', 'receptionist'].includes(lms.session.role))
   const [date, setDate] = useState(todayISO())
   const students = lms.state.students.filter((student) => student.batchId === batchId && student.status === 'active')
   const canMark = lms.can('attendance.mark')
   const [marks, setMarks] = useState({})
   useTitle('Attendance')
   const existing = lms.attendance().filter((row) => row.batchId === batchId && row.date === date)
+  if (!showStudents) {
+    return (
+      <div>
+        <PageTitle eyebrow="Academics" title="Attendance" text="Choose the attendance register you need." />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <button type="button" onClick={() => setShowStudents(true)} className="rounded-3xl bg-white p-6 text-left soft-shadow hover:ring-2 hover:ring-brand-200">
+            <h2 className="font-display text-xl">Student attendance</h2>
+            <p className="mt-2 text-sm text-muted">Open a batch register and mark or review enrolled students.</p>
+          </button>
+          <Link to="/app/faculty-attendance" className="rounded-3xl bg-white p-6 soft-shadow hover:ring-2 hover:ring-brand-200">
+            <h2 className="font-display text-xl">Staff attendance</h2>
+            <p className="mt-2 text-sm text-muted">Teaching and non-teaching staff registers.</p>
+          </Link>
+        </div>
+      </div>
+    )
+  }
   function statusFor(studentId) {
     return marks[studentId] || existing.find((row) => row.studentId === studentId)?.status || 'present'
   }
   return (
     <div>
-      <PageTitle eyebrow="Academics" title="Attendance" text={canMark ? 'Mark the batch you teach. Admin can mark any running batch.' : 'View-only attendance for the front desk.'} />
+      <PageTitle eyebrow="Academics" title="Student attendance" text={canMark ? 'Mark the students in each batch. Admin can mark any batch.' : 'View-only attendance for the front desk.'} action={['admin', 'receptionist'].includes(lms.session.role) ? <Button type="button" variant="outline" onClick={() => setShowStudents(false)}>Attendance registers</Button> : null} />
+      {['admin', 'receptionist'].includes(lms.session.role) ? (
+        <section className="mb-4">
+          <h2 className="mb-2 text-sm font-semibold">Batches</h2>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {batches.map((batch) => {
+              const count = lms.state.students.filter((student) => student.batchId === batch.id && student.status === 'active').length
+              return <button key={batch.id} type="button" onClick={() => { setBatchId(batch.id); setMarks({}) }} className={`rounded-2xl border p-4 text-left ${batchId === batch.id ? 'border-brand-500 bg-brand-50' : 'border-line bg-white'}`}>
+                <span className="font-semibold">{batch.name}</span>
+                <span className="mt-1 block text-xs text-muted">{count} enrolled · {batch.status}</span>
+              </button>
+            })}
+          </div>
+        </section>
+      ) : null}
       <div className="mb-4 grid gap-3 sm:grid-cols-2">
-        <Field label="Batch">
+        {!['admin', 'receptionist'].includes(lms.session.role) ? <Field label="Batch">
           <Select value={batchId} onChange={(e) => { setBatchId(e.target.value); setMarks({}) }}>
             {batches.map((batch) => <option key={batch.id} value={batch.id}>{batch.name}</option>)}
           </Select>
-        </Field>
-        <Field label="Date"><TextInput type="date" value={date} onChange={(e) => { setDate(e.target.value); setMarks({}) }} /></Field>
+        </Field> : null}
+        <Field label="Date"><DateInput value={date} onChange={(e) => { setDate(e.target.value); setMarks({}) }} /></Field>
       </div>
       {students.length ? (
         <div className="rounded-3xl bg-white soft-shadow">

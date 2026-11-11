@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button, Field, PageTitle, Select, TextArea, TextInput } from '../../components/ui'
 import { getSupabaseConfig } from '../../lib/supabase'
 import { useLookups } from './lookups'
@@ -9,10 +9,13 @@ export function NotificationsPage() {
   const [form, setForm] = useState({ title: '', body: '', audience: 'all' })
   const manage = lms.can('notifications.manage')
   useTitle('Notifications')
+  useEffect(() => {
+    lms.markNotificationsRead()
+  }, [lms.session.id, lms.state.notifications])
   return (
     <div className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
       {manage ? (
-        <form className="space-y-3 rounded-3xl bg-white p-5 soft-shadow" onSubmit={(event) => { event.preventDefault(); if (lms.addNotification(form)) setForm({ title: '', body: '', audience: 'all' }) }}>
+        <form className="space-y-3 rounded-3xl bg-white p-5 soft-shadow" onSubmit={async (event) => { event.preventDefault(); if (await lms.addNotification(form)) setForm({ title: '', body: '', audience: 'all' }) }}>
           <h1 className="font-display text-2xl">Send a notification</h1>
           <Field label="Title"><TextInput value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required /></Field>
           <Field label="Message"><TextArea value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} required /></Field>

@@ -3,7 +3,6 @@ import { ArrowRight, Award, BookOpen, MapPin, ShieldCheck, Users } from 'lucide-
 import { PublicLayout } from '../../components/PublicLayout'
 import { Logo } from '../../components/Logo'
 import { FAQS, PARTNERS, TESTIMONIALS, WHY_POINTS } from '../../lib/catalog'
-import { inr } from '../../lib/format'
 import { useLms } from '../../lib/store'
 import { useTitle } from '../useTitle'
 
@@ -84,7 +83,6 @@ export default function HomePage() {
               <span className="rounded-full bg-gold-200 px-2.5 py-1 text-xs font-bold text-amber-900">{course.accent}</span>
               <h3 className="mt-4 font-display text-xl">{course.name}</h3>
               <p className="mt-2 text-sm text-muted">{course.summary}</p>
-              <p className="mt-4 text-sm font-semibold text-brand-800">{course.duration} · {inr(course.fee)}</p>
             </Link>
           ))}
         </div>
