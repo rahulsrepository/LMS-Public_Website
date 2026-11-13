@@ -77,7 +77,7 @@ export function SubjectsPage({ mine = false }) {
         </div>
       ) : <Empty title="No subjects assigned" text="Ask admin or reception to assign your subjects." />}
       <Modal open={open} title={form.id ? 'Edit subject' : 'Add subject'} onClose={() => setOpen(false)}>
-        <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); if (lms.saveSubject(form)) setOpen(false) }}>
+        <form className="space-y-3" onSubmit={async (event) => { event.preventDefault(); if (await lms.saveSubject(form)) setOpen(false) }}>
           <Field label="Name"><TextInput value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></Field>
           <Field label="Code"><TextInput value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} /></Field>
           <Field label="Course">

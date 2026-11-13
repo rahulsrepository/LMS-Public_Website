@@ -357,6 +357,44 @@ export async function loadPublicCatalog() {
   }
 }
 
+export async function loadAcademicStructureFromSupabase() {
+  const supabase = getSupabase()
+  if (!supabase) return null
+  const [courses, subjects, batches, facultyBatches] = await Promise.all([
+    supabase.from('courses').select('id,slug,name,duration,fee,level,mode,summary'),
+    supabase.from('subjects').select('id,course_id,name,code'),
+    supabase.from('batches').select('id,course_id,name,schedule,start_date,end_date,seats,status'),
+    supabase.from('faculty_batches').select('batch_id,faculty:faculty(profile_id)'),
+  ])
+  for (const result of [courses, subjects, batches, facultyBatches]) {
+    if (result.error) throw new Error(result.error.message)
+  }
+  return {
+    courses: courses.data || [],
+    subjects: subjects.data || [],
+    batches: batches.data || [],
+    facultyBatches: facultyBatches.data || [],
+  }
+}
+
+export async function saveSubjectToSupabase(input) {
+  const supabase = getSupabase()
+  if (!supabase) throw new Error('Supabase is not connected.')
+  const courseId = await ensureSupabaseCourse(input.course)
+  const payload = {
+    course_id: courseId,
+    name: input.name.trim(),
+    code: input.code?.trim() || 'SUB',
+  }
+  const existingId = /^[0-9a-f-]{36}$/i.test(input.id || '') ? input.id : null
+  const query = existingId
+    ? supabase.from('subjects').update(payload).eq('id', existingId).select('id').single()
+    : supabase.from('subjects').insert(payload).select('id').single()
+  const { data, error } = await query
+  if (error) throw new Error(error.message)
+  return data
+}
+
 export async function saveJobToSupabase(input) {
   const supabase = getSupabase()
   if (!supabase) throw new Error('Supabase is not connected.')
@@ -677,9 +715,27 @@ export async function saveBatchToSupabase(input) {
     : supabase.from('batches').insert(payload).select('id').single()
   const { data, error } = await query
   if (error) throw new Error(error.message)
+  let assignedFacultyId = null
   if (/^[0-9a-f-]{36}$/i.test(input.facultyProfileId || '')) {
-    const { data: faculty } = await supabase.from('faculty').select('id').eq('profile_id', input.facultyProfileId).maybeSingle()
-    if (faculty?.id) await supabase.from('faculty_batches').upsert({ faculty_id: faculty.id, batch_id: data.id })
+    const { data: faculty, error: facultyError } = await supabase.from('faculty').select('id').eq('profile_id', input.facultyProfileId).maybeSingle()
+    if (facultyError) throw new Error(facultyError.message)
+    if (!faculty?.id) throw new Error('The selected faculty member is not set up in Supabase.')
+    assignedFacultyId = faculty.id
+    const { error: assignmentError } = await supabase.from('faculty_batches').upsert({ faculty_id: assignedFacultyId, batch_id: data.id })
+    if (assignmentError) throw new Error(assignmentError.message)
+  }
+  const { data: currentAssignments, error: assignmentsError } = await supabase
+    .from('faculty_batches')
+    .select('faculty_id')
+    .eq('batch_id', data.id)
+  if (assignmentsError) throw new Error(assignmentsError.message)
+  for (const assignment of currentAssignments || []) {
+    if (assignment.faculty_id === assignedFacultyId) continue
+    const { error: removeError } = await supabase.from('faculty_batches')
+      .delete()
+      .eq('faculty_id', assignment.faculty_id)
+      .eq('batch_id', data.id)
+    if (removeError) throw new Error(removeError.message)
   }
   return data
 }

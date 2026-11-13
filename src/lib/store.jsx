@@ -5,7 +5,7 @@ import { safeExternalUrl, todayISO, uid } from './format'
 import { hasAnyPermission, hasPermission } from './permissions'
 import { INSTITUTE, JOBS, WORKSHOPS } from './catalog'
 import { createSeed, DATA_KEY, DATA_VERSION } from './seed'
-import { changeSupabasePassword, clearSupabaseConfig, createStaffWithSupabase, deleteBatchFromSupabase, deleteCourseFromSupabase, deleteJobFromSupabase, deletePersonWithSupabase, deleteStudentWithSupabase, deleteWorkshopFromSupabase, ensureSupabaseCourse, getSupabaseConfig, isSupabaseConfigured, loadExamsFromSupabase, loadNotificationReadsFromSupabase, loadNotificationsFromSupabase, loadOwnStudentFromSupabase, loadPeopleFromSupabase, loadPublicCatalog, loadStaffAttendanceFromSupabase, nextStudentRollNo, resetSupabasePassword, saveBatchToSupabase, saveExamToSupabase, saveJobToSupabase, saveNotificationReadsToSupabase, saveNotificationToSupabase, saveStaffAttendanceToSupabase, saveStudentToSupabase, saveSupabaseConfig, saveWorkshopToSupabase, setExamStatusInSupabase, setJobOpenInSupabase, setPersonAccess, signInWithSupabase, signOutSupabase, testSupabaseConnection, updateOwnSupabaseProfile, updatePersonWithSupabase, uploadProfileAvatar } from './supabase'
+import { changeSupabasePassword, clearSupabaseConfig, createStaffWithSupabase, deleteBatchFromSupabase, deleteCourseFromSupabase, deleteJobFromSupabase, deletePersonWithSupabase, deleteStudentWithSupabase, deleteWorkshopFromSupabase, ensureSupabaseCourse, getSupabaseConfig, isSupabaseConfigured, loadAcademicStructureFromSupabase, loadExamsFromSupabase, loadNotificationReadsFromSupabase, loadNotificationsFromSupabase, loadOwnStudentFromSupabase, loadPeopleFromSupabase, loadPublicCatalog, loadStaffAttendanceFromSupabase, nextStudentRollNo, resetSupabasePassword, saveBatchToSupabase, saveExamToSupabase, saveJobToSupabase, saveNotificationReadsToSupabase, saveNotificationToSupabase, saveStaffAttendanceToSupabase, saveStudentToSupabase, saveSubjectToSupabase, saveSupabaseConfig, saveWorkshopToSupabase, setExamStatusInSupabase, setJobOpenInSupabase, setPersonAccess, signInWithSupabase, signOutSupabase, testSupabaseConnection, updateOwnSupabaseProfile, updatePersonWithSupabase, uploadProfileAvatar } from './supabase'
 
 const LmsContext = createContext(null)
 const SESSION_KEY = 'c2c-session'
@@ -158,6 +158,93 @@ function mergeRemoteCatalog(state, remote) {
   return { ...state, courses, jobs, workshops }
 }
 
+function mergeRemoteAcademic(state, remote, canReadSubjects, canReadBatches) {
+  const next = structuredClone(state)
+  const merged = mergeRemoteCatalog(next, { courses: remote.courses, jobs: [], workshops: [] })
+  const localCourseBySlug = new Map(merged.courses.map((course) => [course.slug, course.id]))
+  const remoteCourseById = new Map(remote.courses.map((course) => [course.id, course.slug]))
+  const remoteCourseIdBySlug = new Map(remote.courses.map((course) => [course.slug, course.id]))
+  const remoteBatchIdByKey = new Map(remote.batches.map((batch) => [
+    batchSyncKey(batch.course_id, batch.name, batch.start_date, batch.schedule),
+    batch.id,
+  ]))
+  const batchIdMap = new Map()
+  state.batches.forEach((batch) => {
+    const course = state.courses.find((item) => item.id === batch.courseId)
+    const remoteCourseId = course && remoteCourseIdBySlug.get(course.slug)
+    const remoteBatchId = remoteCourseId && remoteBatchIdByKey.get(batchSyncKey(remoteCourseId, batch.name, batch.startDate, batch.schedule))
+    if (remoteBatchId) batchIdMap.set(batch.id, remoteBatchId)
+  })
+  const subjectIdByKey = new Map(remote.subjects.map((subject) => [
+    `${subject.course_id}:${subject.name.trim().toLowerCase()}`,
+    subject.id,
+  ]))
+  const subjectIdMap = new Map()
+
+  state.subjects.forEach((subject) => {
+    const course = state.courses.find((item) => item.id === subject.courseId)
+    const remoteCourseId = course && remoteCourseIdBySlug.get(course.slug)
+    const remoteSubjectId = remoteCourseId && subjectIdByKey.get(`${remoteCourseId}:${subject.name.trim().toLowerCase()}`)
+    if (remoteSubjectId) subjectIdMap.set(subject.id, remoteSubjectId)
+  })
+
+  const subjectId = (id) => subjectIdMap.get(id) || id
+  const batchId = (id) => batchIdMap.get(id) || id
+  merged.faculty = merged.faculty.map((faculty) => ({
+    ...faculty,
+    batchIds: (faculty.batchIds || []).map(batchId),
+    subjectIds: (faculty.subjectIds || []).map(subjectId),
+  }))
+  merged.students = merged.students.map((item) => ({ ...item, batchId: batchId(item.batchId) }))
+  merged.admissions = merged.admissions.map((item) => ({ ...item, batchId: batchId(item.batchId) }))
+  merged.materials = merged.materials.map((item) => ({ ...item, subjectId: subjectId(item.subjectId) }))
+  merged.materials = merged.materials.map((item) => ({ ...item, batchId: batchId(item.batchId) }))
+  merged.exams = merged.exams.map((item) => ({ ...item, subjectId: subjectId(item.subjectId) }))
+  merged.exams = merged.exams.map((item) => ({ ...item, batchId: batchId(item.batchId) }))
+  merged.assignments = merged.assignments.map((item) => ({ ...item, subjectId: subjectId(item.subjectId) }))
+  merged.assignments = merged.assignments.map((item) => ({ ...item, batchId: batchId(item.batchId) }))
+  merged.attendance = merged.attendance.map((item) => ({ ...item, batchId: batchId(item.batchId) }))
+  if (canReadSubjects) {
+    merged.subjects = remote.subjects.flatMap((subject) => {
+      const slug = remoteCourseById.get(subject.course_id)
+      const courseId = localCourseBySlug.get(slug)
+      return courseId ? [{ id: subject.id, courseId, name: subject.name, code: subject.code }] : []
+    })
+  }
+
+  const facultyProfileByBatch = new Map()
+  remote.facultyBatches.forEach((link) => {
+    const faculty = Array.isArray(link.faculty) ? link.faculty[0] : link.faculty
+    if (faculty?.profile_id) facultyProfileByBatch.set(link.batch_id, faculty.profile_id)
+  })
+  if (canReadBatches) {
+    merged.batches = remote.batches.flatMap((batch) => {
+      const slug = remoteCourseById.get(batch.course_id)
+      const courseId = localCourseBySlug.get(slug)
+      if (!courseId) return []
+      const existing = state.batches.find((item) => item.id === batch.id || batchId(item.id) === batch.id)
+      const facultyProfileId = facultyProfileByBatch.get(batch.id)
+      return [{
+        id: batch.id,
+        courseId,
+        name: batch.name,
+        schedule: batch.schedule || '',
+        startDate: batch.start_date || '',
+        endDate: batch.end_date || '',
+        seats: Number(batch.seats) || 25,
+        status: batch.status || 'running',
+        days: existing?.days || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+        facultyId: merged.faculty.find((item) => item.userId === facultyProfileId)?.id || existing?.facultyId || '',
+      }]
+    })
+  }
+  return merged
+}
+
+function batchSyncKey(courseId, name, startDate, schedule) {
+  return [courseId, name.trim().toLowerCase(), startDate || '', schedule || ''].join(':')
+}
+
 function mergeRemotePeople(state, remote) {
   const merge = (local, saved) => [...local.filter((item) => !isCloudId(item.id)), ...saved]
   return {
@@ -212,6 +299,80 @@ export function LmsProvider({ children }) {
     })
     return () => { cancel = true }
   }, [])
+
+  useEffect(() => {
+    if (!session || !isSupabaseConfigured() || !hasAnyPermission(session.role, [
+      'subjects.manage', 'subjects.view', 'subjects.assigned',
+      'batches.manage', 'batches.view', 'batches.assigned',
+    ])) return undefined
+    let cancel = false
+    let reportedError = false
+    let needsMigration = true
+    const canReadSubjects = hasAnyPermission(session.role, ['subjects.manage', 'subjects.view', 'subjects.assigned'])
+    const canReadBatches = hasAnyPermission(session.role, ['batches.manage', 'batches.view', 'batches.assigned'])
+    const refresh = async () => {
+      try {
+        let remote = await loadAcademicStructureFromSupabase()
+        if (cancel || !remote) return
+        if (needsMigration && (hasPermission(session.role, 'subjects.manage') || hasPermission(session.role, 'batches.manage'))) {
+          const current = stateRef.current
+          const remoteCourseBySlug = new Map(remote.courses.map((course) => [course.slug, course]))
+          if (hasPermission(session.role, 'subjects.manage')) {
+            const existingSubjects = new Set(remote.subjects.map((subject) => `${subject.course_id}:${subject.name.trim().toLowerCase()}`))
+            for (const subject of current.subjects) {
+              const course = current.courses.find((item) => item.id === subject.courseId)
+              let remoteCourse = course && remoteCourseBySlug.get(course.slug)
+              if (course && !remoteCourse) {
+                const courseId = await ensureSupabaseCourse(course)
+                remoteCourse = { id: courseId, slug: course.slug }
+                remoteCourseBySlug.set(course.slug, remoteCourse)
+              }
+              if (!remoteCourse) continue
+              const key = `${remoteCourse.id}:${subject.name.trim().toLowerCase()}`
+              if (existingSubjects.has(key)) continue
+              await saveSubjectToSupabase({ ...subject, course })
+              existingSubjects.add(key)
+            }
+          }
+          if (hasPermission(session.role, 'batches.manage')) {
+            const existingBatches = new Set(remote.batches.map((batch) => batchSyncKey(batch.course_id, batch.name, batch.start_date, batch.schedule)))
+            for (const batch of current.batches) {
+              if (isCloudId(batch.id)) continue
+              const course = current.courses.find((item) => item.id === batch.courseId)
+              let remoteCourse = course && remoteCourseBySlug.get(course.slug)
+              if (course && !remoteCourse) {
+                const courseId = await ensureSupabaseCourse(course)
+                remoteCourse = { id: courseId, slug: course.slug }
+                remoteCourseBySlug.set(course.slug, remoteCourse)
+              }
+              if (!remoteCourse) continue
+              const key = batchSyncKey(remoteCourse.id, batch.name, batch.startDate, batch.schedule)
+              if (existingBatches.has(key)) continue
+              const faculty = current.faculty.find((item) => item.id === batch.facultyId)
+              await saveBatchToSupabase({ ...batch, course, facultyProfileId: faculty?.userId })
+              existingBatches.add(key)
+            }
+          }
+          remote = await loadAcademicStructureFromSupabase()
+          if (cancel || !remote) return
+          needsMigration = false
+        }
+        reportedError = false
+        setState((current) => mergeRemoteAcademic(current, remote, canReadSubjects, canReadBatches))
+      } catch (error) {
+        if (!cancel && !reportedError) {
+          reportedError = true
+          pushToast(error.message || 'Could not load batches and subjects.', 'error')
+        }
+      }
+    }
+    refresh()
+    const timer = setInterval(refresh, 30000)
+    return () => {
+      cancel = true
+      clearInterval(timer)
+    }
+  }, [session?.id])
 
   useEffect(() => {
     if (!session || !isSupabaseConfigured()) return undefined
@@ -1487,16 +1648,56 @@ export function LmsProvider({ children }) {
       }, 'Deleted a course', 'Course deleted.')
     },
 
-    saveSubject(input) {
+    async saveSubject(input) {
+      if (!input.name?.trim() || !input.courseId) {
+        pushToast('Subject name and course are required.', 'error')
+        return null
+      }
+      if (!hasPermission(sessionRef.current?.role, 'subjects.manage')) {
+        pushToast('You do not have permission for this action.', 'error')
+        return null
+      }
+      const current = stateRef.current
+      const course = current.courses.find((item) => item.id === input.courseId)
+      const existing = input.id ? current.subjects.find((item) => item.id === input.id) : null
+      if (input.id && !existing) {
+        pushToast('Subject not found.', 'error')
+        return null
+      }
+      let subjectId = input.id || uid('sub')
+      try {
+        if (isSupabaseConfigured()) {
+          if (!course) throw new Error('Choose a course for this subject.')
+          const saved = await saveSubjectToSupabase({ ...input, course })
+          subjectId = saved.id
+        }
+      } catch (error) {
+        pushToast(error.message || 'Could not store the subject in Supabase.', 'error')
+        return null
+      }
       return commit('subjects.manage', (draft) => {
-        if (!input.name?.trim() || !input.courseId) throw new Error('Subject name and course are required.')
         if (input.id) {
           const subject = draft.subjects.find((item) => item.id === input.id)
           if (!subject) throw new Error('Subject not found.')
-          Object.assign(subject, { name: input.name.trim(), code: input.code?.trim() || subject.code, courseId: input.courseId })
+          const previousId = subject.id
+          Object.assign(subject, { id: subjectId, name: input.name.trim(), code: input.code?.trim() || subject.code, courseId: input.courseId })
+          if (previousId !== subjectId) {
+            draft.faculty.forEach((faculty) => {
+              faculty.subjectIds = (faculty.subjectIds || []).map((id) => id === previousId ? subjectId : id)
+            })
+            draft.materials.forEach((item) => {
+              if (item.subjectId === previousId) item.subjectId = subjectId
+            })
+            draft.exams.forEach((item) => {
+              if (item.subjectId === previousId) item.subjectId = subjectId
+            })
+            draft.assignments.forEach((item) => {
+              if (item.subjectId === previousId) item.subjectId = subjectId
+            })
+          }
           return
         }
-        draft.subjects.unshift({ id: uid('sub'), courseId: input.courseId, name: input.name.trim(), code: input.code?.trim() || 'SUB' })
+        draft.subjects.unshift({ id: subjectId, courseId: input.courseId, name: input.name.trim(), code: input.code?.trim() || 'SUB' })
       }, input.id ? 'Updated subject' : 'Added subject')
     },
 
